@@ -10,4 +10,4 @@ CREATE TABLE IF NOT EXISTS tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tokens_tenant ON tokens(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_tokens_active ON tokens(tenant_id) WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW());
+CREATE INDEX IF NOT EXISTS idx_tokens_active ON tokens(tenant_id) WHERE revoked_at IS NULL;

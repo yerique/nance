@@ -123,15 +123,15 @@ func runMigrationsDirect(ctx context.Context, migrationDir string, logger *slog.
 
 		statements := splitSQLStatements(string(content))
 		for _, stmt := range statements {
-			stmt = strings.TrimSpace(stmt)
-			if stmt == "" || strings.HasPrefix(stmt, "--") || strings.HasPrefix(stmt, "/*") {
+			stmt = stripSQLComments(strings.TrimSpace(stmt))
+			if stmt == "" {
 				continue
 			}
 			if _, err := conn.Exec(ctx, stmt); err != nil {
 				// Ignore "already exists" type errors for idempotency on repeated runs
 				if strings.Contains(err.Error(), "already exists") ||
 					strings.Contains(err.Error(), "duplicate key") ||
-					strings.Contains(err.Error(), "relation") && strings.Contains(err.Error(), "already exists") {
+					(strings.Contains(err.Error(), "relation") && strings.Contains(err.Error(), "already exists")) {
 					continue
 				}
 				return fmt.Errorf("exec %s: %w", f, err)
@@ -145,5 +145,20 @@ func splitSQLStatements(sql string) []string {
 	// Very simple splitter: split on ; (good enough for our pure DDL migrations)
 	parts := strings.Split(sql, ";")
 	return parts
+}
+
+// stripSQLComments removes leading full-line -- comments so migrate headers
+// like "-- +migrate Up" do not cause the entire first statement to be skipped.
+func stripSQLComments(stmt string) string {
+	lines := strings.Split(stmt, "\n")
+	var kept []string
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "--") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
