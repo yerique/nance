@@ -60,6 +60,9 @@ func NewServer(
 		// Explicit cache invalidation (Phase 3)
 		r.Post("/tenants/{tenantId}/invalidate", h.Invalidate)
 
+		// Phase 4 savings / platform
+		r.Get("/tenants/{tenantId}/savings", h.SavingsReport)
+
 		// Tokens
 		r.Post("/tenants/{tenantId}/tokens", h.IssueToken)
 		r.Get("/tenants/{tenantId}/tokens", h.ListTokens)

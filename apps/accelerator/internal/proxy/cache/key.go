@@ -173,3 +173,12 @@ func hasForbiddenAggStage(raw bson.Raw) bool {
 	}
 	return false
 }
+
+// CacheKeyWithGeneration appends a generation segment so bumps invalidate logically.
+func CacheKeyWithGeneration(tenantID, db, coll, cmdName string, cmd bson.Raw, cacheKeyVersion int, generation int64) (string, error) {
+	base, err := CacheKey(tenantID, db, coll, cmdName, cmd, cacheKeyVersion)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s:g%d", base, generation), nil
+}

@@ -40,6 +40,10 @@ type Config struct {
 	TenantBurst         int
 	CachedCursorMaxBytes int64
 	DrainTimeout        time.Duration
+
+	// Phase 4 multi-region
+	Region              string
+	KnownRegions        string // comma-separated
 }
 
 func Load() *Config {
@@ -85,6 +89,8 @@ func Load() *Config {
 		TenantBurst:           tenantBurst,
 		CachedCursorMaxBytes:  cachedCursorMax,
 		DrainTimeout:          drainTO,
+		Region:                getenv("NANCE_REGION", "default"),
+		KnownRegions:          os.Getenv("NANCE_KNOWN_REGIONS"),
 	}
 }
 

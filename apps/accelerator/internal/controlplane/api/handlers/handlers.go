@@ -245,3 +245,17 @@ func (h *Handlers) Invalidate(w http.ResponseWriter, r *http.Request) {
 		"tags":     req.Tags,
 	})
 }
+
+// SavingsReport returns a placeholder economics report (Phase 4).
+// Live counters live in proxy processes; this endpoint documents the API shape.
+func (h *Handlers) SavingsReport(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tenantId": tenantID,
+		"note":     "Proxy exposes live counters via /metrics (nance_cache_*). Aggregate with Prometheus/Grafana.",
+		"suggestedQueries": []string{
+			"sum(rate(nance_cache_hits_total{tenant=\"" + tenantID + "\"}[1d]))",
+			"sum(rate(nance_cache_misses_total{tenant=\"" + tenantID + "\"}[1d]))",
+		},
+	})
+}

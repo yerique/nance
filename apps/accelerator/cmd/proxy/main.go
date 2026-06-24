@@ -20,6 +20,7 @@ import (
 	"github.com/taeven/nance/accelerator/internal/proxy/policy"
 	"github.com/taeven/nance/accelerator/internal/proxy/pool"
 	"github.com/taeven/nance/accelerator/internal/proxy/ratelimit"
+	"github.com/taeven/nance/accelerator/internal/proxy/region"
 	"github.com/taeven/nance/accelerator/internal/proxy/server"
 )
 
@@ -108,9 +109,13 @@ func main() {
 		}
 	}()
 
+	regCfg := region.LoadFromEnv()
+	_ = regCfg // affinity available for future miss-forwarding
+
 	logger.Info("nance proxy starting",
 		"listen", cfg.ListenAddr,
 		"health", cfg.HealthAddr,
+		"region", regCfg.LocalRegion,
 		"cache_enabled", cfg.CacheEnabled,
 		"redis", cfg.RedisAddr,
 		"note", "clients must use authMechanism=PLAIN&authSource=$external; username=tenantId, password=rawToken",
