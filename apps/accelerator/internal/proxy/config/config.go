@@ -27,6 +27,13 @@ type Config struct {
 	CursorIdleTimeout time.Duration
 	// AllowUnauthenticated permits commands without prior auth (dev only; hello still works).
 	AllowUnauthenticated bool
+
+	// Redis / cache (Phase 2)
+	RedisAddr            string
+	RedisPassword        string
+	RedisDB              int
+	CacheEnabled         bool // master switch; still requires per-collection policy
+	PolicyRefreshInterval time.Duration
 }
 
 func Load() *Config {
@@ -44,6 +51,9 @@ func Load() *Config {
 	connTimeout := getenvDuration("NANCE_PROXY_BACKEND_CONNECT_TIMEOUT", 10*time.Second)
 	cursorIdle := getenvDuration("NANCE_PROXY_CURSOR_IDLE_TIMEOUT", 10*time.Minute)
 	allowUnauth := getenvBool("NANCE_PROXY_ALLOW_UNAUTH", false)
+	redisAddr := getenv("NANCE_REDIS_ADDR", "localhost:6379")
+	cacheOn := getenvBool("NANCE_CACHE_ENABLED", true)
+	policyRefresh := getenvDuration("NANCE_POLICY_REFRESH_INTERVAL", 30*time.Second)
 
 	return &Config{
 		ListenAddr:            listen,
@@ -56,6 +66,11 @@ func Load() *Config {
 		BackendConnectTimeout: connTimeout,
 		CursorIdleTimeout:     cursorIdle,
 		AllowUnauthenticated:  allowUnauth,
+		RedisAddr:             redisAddr,
+		RedisPassword:         os.Getenv("NANCE_REDIS_PASSWORD"),
+		RedisDB:               getenvInt("NANCE_REDIS_DB", 0),
+		CacheEnabled:          cacheOn,
+		PolicyRefreshInterval: policyRefresh,
 	}
 }
 

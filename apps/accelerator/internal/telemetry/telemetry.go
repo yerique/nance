@@ -53,4 +53,43 @@ var (
 		Name: "nance_proxy_backend_errors_total",
 		Help: "Errors talking to tenant backend MongoDB",
 	}, []string{"tenant"})
+
+	// --- Cache (Phase 2) ---
+
+	CacheHits = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "nance_cache_hits_total",
+		Help: "Cache hits served from Redis",
+	}, []string{"tenant", "ns", "command"})
+
+	CacheMisses = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "nance_cache_misses_total",
+		Help: "Cache misses that executed against backend",
+	}, []string{"tenant", "ns", "command"})
+
+	CacheBypass = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "nance_cache_bypass_total",
+		Help: "Commands that skipped cache",
+	}, []string{"tenant", "reason"})
+
+	CacheInvalidations = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "nance_cache_invalidations_total",
+		Help: "Namespace invalidations",
+	}, []string{"tenant", "ns", "reason"})
+
+	CacheUnavailable = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "nance_cache_redis_unavailable_total",
+		Help: "Redis errors on hot path (fail-open)",
+	})
+
+	CacheResultBytes = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "nance_cache_result_bytes",
+		Help:    "Size of payloads stored in cache",
+		Buckets: []float64{256, 1024, 4096, 16384, 65536, 262144, 1048576},
+	}, []string{"tenant"})
+
+	CacheLatency = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "nance_cache_latency_seconds",
+		Help:    "Cache path latency (hit vs miss populate)",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"path"}) // hit | miss
 )

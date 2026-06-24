@@ -3,14 +3,17 @@ package handler
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/taeven/nance/accelerator/internal/proxy/auth"
+	"github.com/taeven/nance/accelerator/internal/proxy/cache"
 	"github.com/taeven/nance/accelerator/internal/proxy/command"
 	"github.com/taeven/nance/accelerator/internal/proxy/cursor"
+	"github.com/taeven/nance/accelerator/internal/proxy/policy"
 	"github.com/taeven/nance/accelerator/internal/proxy/pool"
 	"github.com/taeven/nance/accelerator/internal/proxy/wire"
 	"github.com/taeven/nance/accelerator/internal/telemetry"
@@ -36,6 +39,8 @@ type Deps struct {
 	Auth     *auth.Validator
 	Pool     *pool.Manager
 	Cursors  *cursor.Registry
+	Cache    *cache.Coordinator
+	Policies *policy.Engine
 	Log      *slog.Logger
 	ConnID   *atomic.Int32 // global connection id counter for hello replies
 }
@@ -218,13 +223,6 @@ func (h *Handler) handlePassthrough(ctx context.Context, cs *ConnState, msg *wir
 		return command.NotAuthorized("no tenant context"), nil
 	}
 
-	client, err := h.deps.Pool.Get(ctx, tenantID)
-	if err != nil {
-		h.deps.Log.Error("backend pool error", "tenant", tenantID, "error", err)
-		telemetry.ProxyBackendErrors.WithLabelValues(tenantID).Inc()
-		return command.ErrorReply(6, "HostUnreachable", "failed to reach tenant backend: "+err.Error()), nil
-	}
-
 	cmdDoc, dbName, err := wire.StripForRunCommand(msg.Body)
 	if err != nil {
 		return command.ErrorReply(2, "BadValue", err.Error()), nil
@@ -235,36 +233,273 @@ func (h *Handler) handlePassthrough(ctx context.Context, cs *ConnState, msg *wir
 
 	// Merge Kind 1 document sequences into insert/update/delete as appropriate
 	cmdDoc = mergeDocumentSequences(cmdDoc, msg.Sequences)
-
 	cmdLower := strings.ToLower(info.Name)
+	collName := info.Collection
+	if collName == "" {
+		collName = fieldString(cmdDoc, info.Name)
+	}
+	nsLabel := command.FormatNS(dbName, collName)
+
+	// Phase 2: try read-through cache for eligible reads
+	if reply, handled := h.tryCacheRead(ctx, cs, tenantID, dbName, collName, nsLabel, cmdLower, msg, info, cmdDoc); handled {
+		return reply, nil
+	}
+
+	client, err := h.deps.Pool.Get(ctx, tenantID)
+	if err != nil {
+		h.deps.Log.Error("backend pool error", "tenant", tenantID, "error", err)
+		telemetry.ProxyBackendErrors.WithLabelValues(tenantID).Inc()
+		return command.ErrorReply(6, "HostUnreachable", "failed to reach tenant backend: "+err.Error()), nil
+	}
 
 	// Cursor-producing reads: use collection helpers so we can manage getMore
+	var reply any
 	if cmdLower == "find" {
-		return h.handleFind(ctx, cs, client, dbName, cmdDoc, info)
-	}
-	if cmdLower == "aggregate" {
-		return h.handleAggregate(ctx, cs, client, dbName, cmdDoc, info)
-	}
+		reply, err = h.handleFind(ctx, cs, client, dbName, cmdDoc, info)
+	} else if cmdLower == "aggregate" {
+		reply, err = h.handleAggregate(ctx, cs, client, dbName, cmdDoc, info)
+	} else {
+		// Default: RunCommand passthrough
+		runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
 
-	// Default: RunCommand passthrough
-	runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
+		var result bson.M
+		err = client.Database(dbName).RunCommand(runCtx, cmdDoc).Decode(&result)
+		if err != nil {
+			telemetry.ProxyBackendErrors.WithLabelValues(tenantID).Inc()
+			return command.MongoErrorToReply(err), nil
+		}
 
-	var result bson.M
-	err = client.Database(dbName).RunCommand(runCtx, cmdDoc).Decode(&result)
+		// Rewrite cursor ids in replies if present (find/aggregate via RunCommand path)
+		if curVal, ok := result["cursor"]; ok {
+			if rewritten, did := h.maybeRewriteCursor(cs, tenantID, curVal, dbName, info.Collection); did {
+				result["cursor"] = rewritten
+			}
+		}
+		reply = mapToD(result)
+	}
 	if err != nil {
-		telemetry.ProxyBackendErrors.WithLabelValues(tenantID).Inc()
-		return command.MongoErrorToReply(err), nil
+		return reply, err
 	}
 
-	// Rewrite cursor ids in replies if present (find/aggregate via RunCommand path)
-	if curVal, ok := result["cursor"]; ok {
-		if rewritten, did := h.maybeRewriteCursor(cs, tenantID, curVal, dbName, info.Collection); did {
-			result["cursor"] = rewritten
+	// Invalidate on successful writes to cacheable namespaces
+	if info.Kind == command.KindWrite && collName != "" {
+		h.maybeInvalidate(ctx, tenantID, dbName, collName, nsLabel)
+	}
+
+	// Populate cache after successful miss path for cacheable reads (when tryCacheRead did not handle)
+	if info.Kind == command.KindRead && collName != "" {
+		h.maybePopulateCache(ctx, tenantID, dbName, collName, nsLabel, cmdLower, msg.Body, info, reply)
+	}
+
+	return reply, nil
+}
+
+// tryCacheRead attempts a cache hit / singleflight miss populate for find/aggregate/etc.
+// handled=true means caller should return reply directly (even if reply is an error document).
+func (h *Handler) tryCacheRead(
+	ctx context.Context,
+	cs *ConnState,
+	tenantID, dbName, collName, nsLabel, cmdLower string,
+	msg *wire.Msg,
+	info command.Info,
+	cmdDoc bson.D,
+) (reply any, handled bool) {
+	if h.deps.Cache == nil || h.deps.Policies == nil || collName == "" {
+		return nil, false
+	}
+	if bypass, reason := cache.ShouldBypassCache(info.Name, msg.Body, info.IsTxn); bypass {
+		telemetry.CacheBypass.WithLabelValues(tenantID, reason).Inc()
+		return nil, false
+	}
+	dec := h.deps.Policies.Lookup(tenantID, dbName, collName)
+	if !dec.Enabled {
+		telemetry.CacheBypass.WithLabelValues(tenantID, "policy_disabled").Inc()
+		return nil, false
+	}
+
+	key, err := cache.CacheKey(tenantID, dbName, collName, info.Name, msg.Body, dec.CacheKeyVersion)
+	if err != nil {
+		telemetry.CacheBypass.WithLabelValues(tenantID, "bad_key").Inc()
+		return nil, false
+	}
+
+	start := time.Now()
+	payload, hit, err := h.deps.Cache.GetOrLoad(ctx, key, func(ctx context.Context) ([]byte, error) {
+		// Execute backend inside singleflight on miss
+		client, err := h.deps.Pool.Get(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		var backendReply any
+		switch cmdLower {
+		case "find":
+			backendReply, err = h.handleFind(ctx, cs, client, dbName, cmdDoc, info)
+		case "aggregate":
+			backendReply, err = h.handleAggregate(ctx, cs, client, dbName, cmdDoc, info)
+		default:
+			runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			var result bson.M
+			err = client.Database(dbName).RunCommand(runCtx, cmdDoc).Decode(&result)
+			if err != nil {
+				return nil, err
+			}
+			backendReply = mapToD(result)
+		}
+		if err != nil {
+			return nil, err
+		}
+		// If backend returned an error document (ok:0), do not cache
+		if isErrorReply(backendReply) {
+			return nil, errBackendCommand
+		}
+		ns, docs, ok := cache.DocsFromCursorReply(backendReply)
+		if !ok {
+			// For non-cursor replies (count etc.) store minimal envelope
+			raw, merr := bson.Marshal(backendReply)
+			if merr != nil {
+				return nil, merr
+			}
+			docs = []bson.Raw{raw}
+			ns = nsLabel
+		}
+		serialized, serr := cache.Serialize(ns, cmdLower, docs)
+		if serr != nil {
+			return nil, serr
+		}
+		if len(serialized) > dec.MaxResultBytes {
+			telemetry.CacheBypass.WithLabelValues(tenantID, "size").Inc()
+			return nil, errTooBig
+		}
+		h.deps.Cache.BestEffortSet(ctx, tenantID, dbName, collName, key, serialized, dec.TTL)
+		telemetry.CacheResultBytes.WithLabelValues(tenantID).Observe(float64(len(serialized)))
+		telemetry.CacheMisses.WithLabelValues(tenantID, nsLabel, cmdLower).Inc()
+		return serialized, nil
+	})
+
+	if err != nil {
+		if errors.Is(err, cache.ErrUnavailable) {
+			telemetry.CacheUnavailable.Inc()
+			return nil, false // fail open
+		}
+		if errors.Is(err, errTooBig) || errors.Is(err, errBackendCommand) {
+			return nil, false
+		}
+		// backend errors while loading — fall through so normal path can surface
+		return nil, false
+	}
+
+	cr, derr := cache.Deserialize(payload)
+	if derr != nil {
+		return nil, false
+	}
+	if hit {
+		telemetry.CacheHits.WithLabelValues(tenantID, nsLabel, cmdLower).Inc()
+		telemetry.CacheLatency.WithLabelValues("hit").Observe(time.Since(start).Seconds())
+	} else {
+		telemetry.CacheLatency.WithLabelValues("miss").Observe(time.Since(start).Seconds())
+	}
+	// Phase 2 MVP: cursor id always 0 with full firstBatch
+	if cmdLower == "count" || cmdLower == "estimateddocumentcount" || cmdLower == "distinct" {
+		// stored as single raw reply doc
+		if len(cr.Docs) == 1 {
+			var m bson.M
+			if err := bson.Unmarshal(cr.Docs[0], &m); err == nil {
+				return mapToD(m), true
+			}
 		}
 	}
+	return cache.ReplyFromCache(cr), true
+}
 
-	return mapToD(result), nil
+var (
+	errTooBig         = errors.New("result too large for cache")
+	errBackendCommand = errors.New("backend command error")
+)
+
+func isErrorReply(reply any) bool {
+	switch r := reply.(type) {
+	case bson.D:
+		for _, e := range r {
+			if e.Key == "ok" {
+				switch v := e.Value.(type) {
+				case float64:
+					return v == 0
+				case int32:
+					return v == 0
+				case int:
+					return v == 0
+				}
+			}
+		}
+	case bson.M:
+		if v, ok := r["ok"]; ok {
+			switch n := v.(type) {
+			case float64:
+				return n == 0
+			case int32:
+				return n == 0
+			}
+		}
+	}
+	return false
+}
+
+func (h *Handler) maybeInvalidate(ctx context.Context, tenantID, dbName, collName, nsLabel string) {
+	if h.deps.Cache == nil || h.deps.Policies == nil {
+		return
+	}
+	dec := h.deps.Policies.Lookup(tenantID, dbName, collName)
+	if !dec.Enabled {
+		return
+	}
+	go func() {
+		invCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := h.deps.Cache.BestEffortInvalidate(invCtx, tenantID, dbName, collName); err == nil {
+			telemetry.CacheInvalidations.WithLabelValues(tenantID, nsLabel, "write").Inc()
+		}
+	}()
+}
+
+// maybePopulateCache is used when the normal passthrough path ran (cache miss path outside coordinator).
+// With tryCacheRead handling the happy path, this is mostly a safety net for non-cursor reads.
+func (h *Handler) maybePopulateCache(
+	ctx context.Context,
+	tenantID, dbName, collName, nsLabel, cmdLower string,
+	raw bson.Raw,
+	info command.Info,
+	reply any,
+) {
+	if h.deps.Cache == nil || h.deps.Policies == nil || isErrorReply(reply) {
+		return
+	}
+	if bypass, _ := cache.ShouldBypassCache(info.Name, raw, info.IsTxn); bypass {
+		return
+	}
+	dec := h.deps.Policies.Lookup(tenantID, dbName, collName)
+	if !dec.Enabled {
+		return
+	}
+	key, err := cache.CacheKey(tenantID, dbName, collName, info.Name, raw, dec.CacheKeyVersion)
+	if err != nil {
+		return
+	}
+	ns, docs, ok := cache.DocsFromCursorReply(reply)
+	if !ok {
+		rawReply, merr := bson.Marshal(reply)
+		if merr != nil {
+			return
+		}
+		docs = []bson.Raw{rawReply}
+		ns = nsLabel
+	}
+	serialized, err := cache.Serialize(ns, cmdLower, docs)
+	if err != nil || len(serialized) > dec.MaxResultBytes {
+		return
+	}
+	h.deps.Cache.BestEffortSet(ctx, tenantID, dbName, collName, key, serialized, dec.TTL)
 }
 
 func mergeDocumentSequences(cmd bson.D, seqs []wire.DocumentSequence) bson.D {

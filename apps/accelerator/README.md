@@ -101,7 +101,7 @@ App / mongosh / Compass
  Tenant's real MongoDB (:27017 in local compose)
 ```
 
-- **No caching** in Phase 1 (that is Phase 2 / Redis).
+- **Phase 2 read-through cache**: Redis-backed caching for explicitly enabled collections (`PUT .../policy/collections/{db.coll}` with `enabled: true`). Fail-open if Redis is down. Set `NANCE_REDIS_ADDR`, `NANCE_CACHE_ENABLED=true`.
 - **Tenant isolation**: after PLAIN auth, each TCP connection is bound to one tenant; backend clients are never shared across tenants.
 - **Connection pooling**: many app-side connections collapse to a small driver pool per tenant on the real cluster.
 - **Topology lie**: `hello` / `isMaster` always reports a single writable primary (no replica-set host list).
@@ -174,4 +174,4 @@ make lint
 
 ## Next
 
-Phase 2 layers Redis read-through caching on top of this passthrough path (see [../../phase2.md](../../phase2.md)).
+Phase 2 read-through cache is implemented (see [../../phase2.md](../../phase2.md)). Enable per collection via the control plane policy API; proxy loads policies every `NANCE_POLICY_REFRESH_INTERVAL` (default 30s). Write commands invalidate the collection registry set in Redis.

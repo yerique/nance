@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/taeven/nance/accelerator/internal/proxy/auth"
+	"github.com/taeven/nance/accelerator/internal/proxy/cache"
 	proxyconfig "github.com/taeven/nance/accelerator/internal/proxy/config"
 	"github.com/taeven/nance/accelerator/internal/proxy/cursor"
 	"github.com/taeven/nance/accelerator/internal/proxy/handler"
+	"github.com/taeven/nance/accelerator/internal/proxy/policy"
 	"github.com/taeven/nance/accelerator/internal/proxy/pool"
 	"github.com/taeven/nance/accelerator/internal/proxy/wire"
 	"github.com/taeven/nance/accelerator/internal/telemetry"
@@ -25,12 +27,14 @@ import (
 
 // Server accepts MongoDB wire protocol connections and proxies commands.
 type Server struct {
-	cfg     *proxyconfig.Config
-	log     *slog.Logger
-	auth    *auth.Validator
-	pool    *pool.Manager
-	cursors *cursor.Registry
-	handler *handler.Handler
+	cfg      *proxyconfig.Config
+	log      *slog.Logger
+	auth     *auth.Validator
+	pool     *pool.Manager
+	cursors  *cursor.Registry
+	cache    *cache.Coordinator
+	policies *policy.Engine
+	handler  *handler.Handler
 
 	ln net.Listener
 
@@ -45,25 +49,39 @@ type Server struct {
 	closed atomic.Bool
 }
 
-func New(cfg *proxyconfig.Config, log *slog.Logger, validator *auth.Validator, pools *pool.Manager, cursors *cursor.Registry) *Server {
+// Options for constructing the proxy server (Phase 2 adds cache/policy).
+type Options struct {
+	Cache    *cache.Coordinator
+	Policies *policy.Engine
+}
+
+func New(cfg *proxyconfig.Config, log *slog.Logger, validator *auth.Validator, pools *pool.Manager, cursors *cursor.Registry, opts ...Options) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
+	var o Options
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	s := &Server{
-		cfg:     cfg,
-		log:     log,
-		auth:    validator,
-		pool:    pools,
-		cursors: cursors,
-		conns:   make(map[net.Conn]struct{}),
-		tenantN: make(map[string]int),
+		cfg:      cfg,
+		log:      log,
+		auth:     validator,
+		pool:     pools,
+		cursors:  cursors,
+		cache:    o.Cache,
+		policies: o.Policies,
+		conns:    make(map[net.Conn]struct{}),
+		tenantN:  make(map[string]int),
 	}
 	s.handler = handler.New(handler.Deps{
-		Auth:    validator,
-		Pool:    pools,
-		Cursors: cursors,
-		Log:     log,
-		ConnID:  &s.connID,
+		Auth:     validator,
+		Pool:     pools,
+		Cursors:  cursors,
+		Cache:    o.Cache,
+		Policies: o.Policies,
+		Log:      log,
+		ConnID:   &s.connID,
 	})
 	s.reqID.Store(1)
 	return s

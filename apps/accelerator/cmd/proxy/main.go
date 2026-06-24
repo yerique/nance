@@ -12,9 +12,11 @@ import (
 	"github.com/taeven/nance/accelerator/internal/controlplane/store"
 	"github.com/taeven/nance/accelerator/internal/crypto"
 	"github.com/taeven/nance/accelerator/internal/proxy/auth"
+	"github.com/taeven/nance/accelerator/internal/proxy/cache"
 	proxyconfig "github.com/taeven/nance/accelerator/internal/proxy/config"
 	"github.com/taeven/nance/accelerator/internal/proxy/cursor"
 	"github.com/taeven/nance/accelerator/internal/proxy/health"
+	"github.com/taeven/nance/accelerator/internal/proxy/policy"
 	"github.com/taeven/nance/accelerator/internal/proxy/pool"
 	"github.com/taeven/nance/accelerator/internal/proxy/server"
 )
@@ -42,16 +44,46 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Phase 2: policy engine + optional Redis cache (fail-open if Redis missing)
+	polEngine := policy.NewEngine(pgStore, logger, cfg.PolicyRefreshInterval)
+	go polEngine.Start(ctx)
+
+	var cacheCoord *cache.Coordinator
+	if cfg.CacheEnabled {
+		rs, rerr := cache.NewRedisStore(ctx, cache.Options{
+			Addr:     cfg.RedisAddr,
+			Password: cfg.RedisPassword,
+			DB:       cfg.RedisDB,
+		})
+		if rerr != nil {
+			logger.Warn("redis init failed; cache disabled (passthrough only)", "error", rerr)
+			cacheCoord = cache.NewCoordinator(cache.NoopStore{})
+		} else {
+			if perr := rs.Ping(ctx); perr != nil {
+				logger.Warn("redis ping failed at startup; continuing fail-open", "addr", cfg.RedisAddr, "error", perr)
+			} else {
+				logger.Info("redis cache ready", "addr", cfg.RedisAddr)
+			}
+			cacheCoord = cache.NewCoordinator(rs)
+			defer rs.Close()
+		}
+	} else {
+		cacheCoord = cache.NewCoordinator(cache.NoopStore{})
+	}
+
 	validator := auth.NewValidator(pgStore)
 	pools := pool.NewManager(pgStore, cryptoCfg, cfg, logger)
 	cursors := cursor.NewRegistry(cfg.CursorIdleTimeout)
-	proxySrv := server.New(cfg, logger, validator, pools, cursors)
+	proxySrv := server.New(cfg, logger, validator, pools, cursors, server.Options{
+		Cache:    cacheCoord,
+		Policies: polEngine,
+	})
 
 	// HTTP health/metrics sidecar
 	hs := &health.Server{
 		Addr: cfg.HealthAddr,
 		ReadyFn: func(c context.Context) error {
-			// Ready if we can ping postgres
+			// Ready if we can ping postgres (Redis optional — fail-open)
 			_, err := pgStore.ListTenants(c)
 			return err
 		},
@@ -73,6 +105,8 @@ func main() {
 	logger.Info("nance proxy starting",
 		"listen", cfg.ListenAddr,
 		"health", cfg.HealthAddr,
+		"cache_enabled", cfg.CacheEnabled,
+		"redis", cfg.RedisAddr,
 		"note", "clients must use authMechanism=PLAIN&authSource=$external; username=tenantId, password=rawToken",
 	)
 
