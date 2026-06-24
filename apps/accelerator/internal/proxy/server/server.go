@@ -14,11 +14,13 @@ import (
 
 	"github.com/taeven/nance/accelerator/internal/proxy/auth"
 	"github.com/taeven/nance/accelerator/internal/proxy/cache"
+	"github.com/taeven/nance/accelerator/internal/proxy/cachedcursor"
 	proxyconfig "github.com/taeven/nance/accelerator/internal/proxy/config"
 	"github.com/taeven/nance/accelerator/internal/proxy/cursor"
 	"github.com/taeven/nance/accelerator/internal/proxy/handler"
 	"github.com/taeven/nance/accelerator/internal/proxy/policy"
 	"github.com/taeven/nance/accelerator/internal/proxy/pool"
+	"github.com/taeven/nance/accelerator/internal/proxy/ratelimit"
 	"github.com/taeven/nance/accelerator/internal/proxy/wire"
 	"github.com/taeven/nance/accelerator/internal/telemetry"
 
@@ -27,14 +29,16 @@ import (
 
 // Server accepts MongoDB wire protocol connections and proxies commands.
 type Server struct {
-	cfg      *proxyconfig.Config
-	log      *slog.Logger
-	auth     *auth.Validator
-	pool     *pool.Manager
-	cursors  *cursor.Registry
-	cache    *cache.Coordinator
-	policies *policy.Engine
-	handler  *handler.Handler
+	cfg           *proxyconfig.Config
+	log           *slog.Logger
+	auth          *auth.Validator
+	pool          *pool.Manager
+	cursors       *cursor.Registry
+	cachedCursors *cachedcursor.Store
+	cache         *cache.Coordinator
+	policies      *policy.Engine
+	limiter       *ratelimit.Limiter
+	handler       *handler.Handler
 
 	ln net.Listener
 
@@ -47,12 +51,15 @@ type Server struct {
 
 	wg     sync.WaitGroup
 	closed atomic.Bool
+	draining atomic.Bool
 }
 
-// Options for constructing the proxy server (Phase 2 adds cache/policy).
+// Options for constructing the proxy server (Phase 2/3 extras).
 type Options struct {
-	Cache    *cache.Coordinator
-	Policies *policy.Engine
+	Cache         *cache.Coordinator
+	Policies      *policy.Engine
+	CachedCursors *cachedcursor.Store
+	Limiter       *ratelimit.Limiter
 }
 
 func New(cfg *proxyconfig.Config, log *slog.Logger, validator *auth.Validator, pools *pool.Manager, cursors *cursor.Registry, opts ...Options) *Server {
@@ -64,24 +71,29 @@ func New(cfg *proxyconfig.Config, log *slog.Logger, validator *auth.Validator, p
 		o = opts[0]
 	}
 	s := &Server{
-		cfg:      cfg,
-		log:      log,
-		auth:     validator,
-		pool:     pools,
-		cursors:  cursors,
-		cache:    o.Cache,
-		policies: o.Policies,
-		conns:    make(map[net.Conn]struct{}),
-		tenantN:  make(map[string]int),
+		cfg:           cfg,
+		log:           log,
+		auth:          validator,
+		pool:          pools,
+		cursors:       cursors,
+		cachedCursors: o.CachedCursors,
+		cache:         o.Cache,
+		policies:      o.Policies,
+		limiter:       o.Limiter,
+		conns:         make(map[net.Conn]struct{}),
+		tenantN:       make(map[string]int),
 	}
 	s.handler = handler.New(handler.Deps{
-		Auth:     validator,
-		Pool:     pools,
-		Cursors:  cursors,
-		Cache:    o.Cache,
-		Policies: o.Policies,
-		Log:      log,
-		ConnID:   &s.connID,
+		Auth:          validator,
+		Pool:          pools,
+		Cursors:       cursors,
+		CachedCursors: o.CachedCursors,
+		Cache:         o.Cache,
+		Policies:      o.Policies,
+		Limiter:       o.Limiter,
+		Log:           log,
+		ConnID:        &s.connID,
+		DefaultBatch:  101,
 	})
 	s.reqID.Store(1)
 	return s
@@ -96,7 +108,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.ln = ln
 	s.log.Info("proxy listening", "addr", s.cfg.ListenAddr)
 
-	// Cursor prune loop
+	// Cursor prune loop (backend + emulated cache cursors)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -110,6 +122,16 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 				n := s.cursors.PruneIdle()
 				if n > 0 {
 					s.log.Debug("pruned idle cursors", "count", n)
+				}
+				if s.cachedCursors != nil {
+					cn := s.cachedCursors.PruneIdle()
+					telemetry.ProxyCachedCursorsActive.Set(float64(s.cachedCursors.Count()))
+					if cn > 0 {
+						s.log.Debug("pruned idle cached cursors", "count", cn)
+					}
+				}
+				if s.limiter != nil {
+					s.limiter.Prune(30 * time.Minute)
 				}
 			}
 		}
@@ -127,6 +149,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 				}
 				errCh <- err
 				return
+			}
+			if s.draining.Load() {
+				_ = conn.Close()
+				continue
 			}
 			s.trackConn(conn, true)
 			telemetry.ProxyConnectionsActive.Inc()
@@ -156,9 +182,25 @@ func (s *Server) Close() error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	s.draining.Store(true)
 	var err error
 	if s.ln != nil {
 		err = s.ln.Close()
+	}
+	// Brief drain window for in-flight connections before hard close
+	drain := s.cfg.DrainTimeout
+	if drain <= 0 {
+		drain = 5 * time.Second
+	}
+	deadline := time.Now().Add(drain)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		n := len(s.conns)
+		s.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	s.mu.Lock()
 	for c := range s.conns {
@@ -192,6 +234,9 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 
 	defer func() {
 		s.cursors.CleanupConn(connKey)
+		if s.cachedCursors != nil {
+			s.cachedCursors.CleanupConn(connKey)
+		}
 		if cs.Tenant != nil {
 			s.releaseTenantConn(cs.Tenant.TenantID)
 		}

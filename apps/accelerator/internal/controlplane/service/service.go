@@ -137,12 +137,25 @@ func (s *BackendService) TestConnection(ctx context.Context, tenantID string) er
 }
 
 // PolicyService manages cache policies.
+// CacheInvalidator is implemented by the proxy cache layer (optional on control plane).
+type CacheInvalidator interface {
+	InvalidateNamespace(ctx context.Context, tenantID, db, coll string) error
+	InvalidateTags(ctx context.Context, tenantID string, tags []string) error
+}
+
 type PolicyService struct {
 	store store.Store
+	cache CacheInvalidator // optional; when nil only audit is recorded
 }
 
 func NewPolicyService(s store.Store) *PolicyService {
 	return &PolicyService{store: s}
+}
+
+// WithCache attaches a Redis-backed invalidator for explicit flushes.
+func (s *PolicyService) WithCache(c CacheInvalidator) *PolicyService {
+	s.cache = c
+	return s
 }
 
 func (s *PolicyService) Get(ctx context.Context, tenantID string) (*model.CachePolicy, error) {
@@ -181,6 +194,26 @@ func (s *PolicyService) SetDefaults(ctx context.Context, tenantID string, defaul
 		return err
 	}
 	_ = s.store.RecordAudit(ctx, tenantID, "system", "update_default_ttl", map[string]int{"ttl": defaultTTL})
+	return nil
+}
+
+// Invalidate flushes cache entries for a namespace and/or tags (Phase 3).
+func (s *PolicyService) Invalidate(ctx context.Context, tenantID, db, coll string, tags []string) error {
+	if s.cache != nil {
+		if db != "" && coll != "" {
+			if err := s.cache.InvalidateNamespace(ctx, tenantID, db, coll); err != nil {
+				return err
+			}
+		}
+		if len(tags) > 0 {
+			if err := s.cache.InvalidateTags(ctx, tenantID, tags); err != nil {
+				return err
+			}
+		}
+	}
+	_ = s.store.RecordAudit(ctx, tenantID, "system", "invalidate_cache", map[string]any{
+		"db": db, "coll": coll, "tags": tags,
+	})
 	return nil
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/taeven/nance/accelerator/internal/controlplane/service"
 	"github.com/taeven/nance/accelerator/internal/controlplane/store"
 	"github.com/taeven/nance/accelerator/internal/crypto"
+	"github.com/taeven/nance/accelerator/internal/proxy/cache"
 )
 
 func main() {
@@ -58,6 +59,16 @@ func main() {
 	tenantSvc := service.NewTenantService(pgStore)
 	backendSvc := service.NewBackendService(pgStore, cryptoCfg)
 	policySvc := service.NewPolicyService(pgStore)
+	// Optional Redis for explicit invalidation (same as proxies)
+	if addr := os.Getenv("NANCE_REDIS_ADDR"); addr != "" {
+		if rs, err := cache.NewRedisStore(ctx, cache.Options{Addr: addr, Password: os.Getenv("NANCE_REDIS_PASSWORD")}); err == nil {
+			policySvc = policySvc.WithCache(&service.RedisInvalidator{Store: rs})
+			defer rs.Close()
+			logger.Info("control plane redis invalidator enabled", "addr", addr)
+		} else {
+			logger.Warn("redis unavailable for control plane invalidation", "error", err)
+		}
+	}
 	tokenSvc := service.NewTokenService(pgStore)
 
 	// 5. HTTP server

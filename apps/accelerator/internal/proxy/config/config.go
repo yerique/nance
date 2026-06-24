@@ -34,6 +34,12 @@ type Config struct {
 	RedisDB              int
 	CacheEnabled         bool // master switch; still requires per-collection policy
 	PolicyRefreshInterval time.Duration
+
+	// Phase 3
+	TenantQPS           int
+	TenantBurst         int
+	CachedCursorMaxBytes int64
+	DrainTimeout        time.Duration
 }
 
 func Load() *Config {
@@ -54,6 +60,10 @@ func Load() *Config {
 	redisAddr := getenv("NANCE_REDIS_ADDR", "localhost:6379")
 	cacheOn := getenvBool("NANCE_CACHE_ENABLED", true)
 	policyRefresh := getenvDuration("NANCE_POLICY_REFRESH_INTERVAL", 30*time.Second)
+	tenantQPS := getenvInt("NANCE_PROXY_TENANT_QPS", 2000)
+	tenantBurst := getenvInt("NANCE_PROXY_TENANT_BURST", 4000)
+	cachedCursorMax := int64(getenvInt("NANCE_PROXY_CACHED_CURSOR_MAX_MB", 64)) << 20
+	drainTO := getenvDuration("NANCE_PROXY_DRAIN_TIMEOUT", 30*time.Second)
 
 	return &Config{
 		ListenAddr:            listen,
@@ -71,6 +81,10 @@ func Load() *Config {
 		RedisDB:               getenvInt("NANCE_REDIS_DB", 0),
 		CacheEnabled:          cacheOn,
 		PolicyRefreshInterval: policyRefresh,
+		TenantQPS:             tenantQPS,
+		TenantBurst:           tenantBurst,
+		CachedCursorMaxBytes:  cachedCursorMax,
+		DrainTimeout:          drainTO,
 	}
 }
 

@@ -13,11 +13,13 @@ import (
 	"github.com/taeven/nance/accelerator/internal/crypto"
 	"github.com/taeven/nance/accelerator/internal/proxy/auth"
 	"github.com/taeven/nance/accelerator/internal/proxy/cache"
+	"github.com/taeven/nance/accelerator/internal/proxy/cachedcursor"
 	proxyconfig "github.com/taeven/nance/accelerator/internal/proxy/config"
 	"github.com/taeven/nance/accelerator/internal/proxy/cursor"
 	"github.com/taeven/nance/accelerator/internal/proxy/health"
 	"github.com/taeven/nance/accelerator/internal/proxy/policy"
 	"github.com/taeven/nance/accelerator/internal/proxy/pool"
+	"github.com/taeven/nance/accelerator/internal/proxy/ratelimit"
 	"github.com/taeven/nance/accelerator/internal/proxy/server"
 )
 
@@ -74,9 +76,13 @@ func main() {
 	validator := auth.NewValidator(pgStore)
 	pools := pool.NewManager(pgStore, cryptoCfg, cfg, logger)
 	cursors := cursor.NewRegistry(cfg.CursorIdleTimeout)
+	cachedCursors := cachedcursor.NewStore(cfg.CursorIdleTimeout, cfg.CachedCursorMaxBytes)
+	limiter := ratelimit.New(cfg.TenantQPS, cfg.TenantBurst)
 	proxySrv := server.New(cfg, logger, validator, pools, cursors, server.Options{
-		Cache:    cacheCoord,
-		Policies: polEngine,
+		Cache:         cacheCoord,
+		Policies:      polEngine,
+		CachedCursors: cachedCursors,
+		Limiter:       limiter,
 	})
 
 	// HTTP health/metrics sidecar

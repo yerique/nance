@@ -28,8 +28,17 @@ func Deserialize(b []byte) (*CachedResult, error) {
 
 // ReplyFromCache builds a find/aggregate style cursor reply with id=0 (Phase 2 MVP).
 func ReplyFromCache(cr *CachedResult) bson.D {
-	batch := make(bson.A, 0, len(cr.Docs))
-	for _, d := range cr.Docs {
+	return ReplyFromCacheWithCursor(cr, 0, nil)
+}
+
+// ReplyFromCacheWithCursor builds a reply; if cursorID!=0 only firstBatch docs are included.
+func ReplyFromCacheWithCursor(cr *CachedResult, cursorID int64, firstBatchDocs []bson.Raw) bson.D {
+	src := cr.Docs
+	if firstBatchDocs != nil {
+		src = firstBatchDocs
+	}
+	batch := make(bson.A, 0, len(src))
+	for _, d := range src {
 		var m bson.M
 		if err := bson.Unmarshal(d, &m); err != nil {
 			batch = append(batch, d)
@@ -39,7 +48,7 @@ func ReplyFromCache(cr *CachedResult) bson.D {
 	}
 	return bson.D{
 		{Key: "cursor", Value: bson.D{
-			{Key: "id", Value: int64(0)},
+			{Key: "id", Value: cursorID},
 			{Key: "ns", Value: cr.NS},
 			{Key: "firstBatch", Value: batch},
 		}},

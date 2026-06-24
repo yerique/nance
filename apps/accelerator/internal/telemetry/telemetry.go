@@ -92,4 +92,21 @@ var (
 		Help:    "Cache path latency (hit vs miss populate)",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"path"}) // hit | miss
+
+	// --- Phase 3 hardening ---
+
+	ProxyRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "nance_proxy_rate_limited_total",
+		Help: "Commands rejected by per-tenant rate limiter",
+	}, []string{"tenant"})
+
+	ProxyCachedCursorsActive = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "nance_proxy_cached_cursors_active",
+		Help: "In-memory emulated cursors for cache hits",
+	})
+
+	CacheExplicitInvalidations = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "nance_cache_explicit_invalidations_total",
+		Help: "Control-plane / explicit invalidation requests",
+	}, []string{"tenant", "kind"}) // ns | tag
 )

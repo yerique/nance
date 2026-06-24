@@ -11,10 +11,12 @@ import (
 
 	"github.com/taeven/nance/accelerator/internal/proxy/auth"
 	"github.com/taeven/nance/accelerator/internal/proxy/cache"
+	"github.com/taeven/nance/accelerator/internal/proxy/cachedcursor"
 	"github.com/taeven/nance/accelerator/internal/proxy/command"
 	"github.com/taeven/nance/accelerator/internal/proxy/cursor"
 	"github.com/taeven/nance/accelerator/internal/proxy/policy"
 	"github.com/taeven/nance/accelerator/internal/proxy/pool"
+	"github.com/taeven/nance/accelerator/internal/proxy/ratelimit"
 	"github.com/taeven/nance/accelerator/internal/proxy/wire"
 	"github.com/taeven/nance/accelerator/internal/telemetry"
 
@@ -36,13 +38,16 @@ type ConnState struct {
 
 // Deps bundles handler dependencies.
 type Deps struct {
-	Auth     *auth.Validator
-	Pool     *pool.Manager
-	Cursors  *cursor.Registry
-	Cache    *cache.Coordinator
-	Policies *policy.Engine
-	Log      *slog.Logger
-	ConnID   *atomic.Int32 // global connection id counter for hello replies
+	Auth           *auth.Validator
+	Pool           *pool.Manager
+	Cursors        *cursor.Registry
+	CachedCursors  *cachedcursor.Store
+	Cache          *cache.Coordinator
+	Policies       *policy.Engine
+	Limiter        *ratelimit.Limiter
+	Log            *slog.Logger
+	ConnID         *atomic.Int32 // global connection id counter for hello replies
+	DefaultBatch   int32
 }
 
 // Handler processes one OP_MSG request and returns a reply body document.
@@ -84,6 +89,14 @@ func (h *Handler) Handle(ctx context.Context, cs *ConnState, msg *wire.Msg) (any
 		return command.NotAuthorized(""), nil
 	}
 
+	// Phase 3: per-tenant command rate limit (post-auth only)
+	if cs.Authed && cs.Tenant != nil && h.deps.Limiter != nil && !command.IsPreAuthAllowed(info.Name) {
+		if !h.deps.Limiter.Allow(cs.Tenant.TenantID) {
+			telemetry.ProxyRateLimited.WithLabelValues(cs.Tenant.TenantID).Inc()
+			return command.ErrorReply(16500, "RateLimitExceeded", "tenant command rate limit exceeded; retry with backoff"), nil
+		}
+	}
+
 	switch cmdLower {
 	case "hello", "ismaster":
 		return h.handleHello(cs, info.Name), nil
@@ -120,8 +133,13 @@ func (h *Handler) Handle(ctx context.Context, cs *ConnState, msg *wire.Msg) (any
 	case "getnonce":
 		return bson.D{{Key: "nonce", Value: "0000000000000000"}, {Key: "ok", Value: float64(1)}}, nil
 	case "getmore":
+		// Prefer emulated cache cursors, then backend cursor registry
+		if reply, ok := h.handleCachedGetMore(ctx, cs, msg.Body); ok {
+			return reply, nil
+		}
 		return h.handleGetMore(ctx, cs, msg.Body)
 	case "killcursors":
+		h.handleKillCachedCursors(cs, msg.Body)
 		return h.handleKillCursors(cs, msg.Body), nil
 	default:
 		// Requires auth unless unauth allowed
@@ -400,9 +418,7 @@ func (h *Handler) tryCacheRead(
 	} else {
 		telemetry.CacheLatency.WithLabelValues("miss").Observe(time.Since(start).Seconds())
 	}
-	// Phase 2 MVP: cursor id always 0 with full firstBatch
 	if cmdLower == "count" || cmdLower == "estimateddocumentcount" || cmdLower == "distinct" {
-		// stored as single raw reply doc
 		if len(cr.Docs) == 1 {
 			var m bson.M
 			if err := bson.Unmarshal(cr.Docs[0], &m); err == nil {
@@ -410,7 +426,75 @@ func (h *Handler) tryCacheRead(
 			}
 		}
 	}
+	// Phase 3: emulate server cursors for large cached result sets
+	batchSize := int(h.deps.DefaultBatch)
+	if batchSize <= 0 {
+		batchSize = 101
+	}
+	if h.deps.CachedCursors != nil && (cmdLower == "find" || cmdLower == "aggregate") {
+		cid, first, _ := h.deps.CachedCursors.Register(tenantID, cs.Key, cr.NS, cr.Docs, batchSize)
+		return cache.ReplyFromCacheWithCursor(cr, cid, first), true
+	}
 	return cache.ReplyFromCache(cr), true
+}
+
+func (h *Handler) handleCachedGetMore(_ context.Context, cs *ConnState, body bson.Raw) (any, bool) {
+	if h.deps.CachedCursors == nil || !cs.Authed || cs.Tenant == nil {
+		return nil, false
+	}
+	cursorID := wire.LookupInt64(body, "getMore")
+	if cursorID == 0 {
+		cursorID = wire.LookupInt64(body, "getmore")
+	}
+	// Cached cursor ids are in the high range; try lookup first
+	batchSize := int(wire.LookupInt32(body, "batchSize"))
+	ns, docs, exhausted, ok := h.deps.CachedCursors.NextBatch(cursorID, cs.Tenant.TenantID, cs.Key, batchSize)
+	if !ok {
+		return nil, false
+	}
+	batch := make(bson.A, 0, len(docs))
+	for _, d := range docs {
+		var m bson.M
+		if err := bson.Unmarshal(d, &m); err != nil {
+			batch = append(batch, d)
+			continue
+		}
+		batch = append(batch, m)
+	}
+	outID := cursorID
+	if exhausted {
+		outID = 0
+	}
+	return bson.D{
+		{Key: "cursor", Value: bson.D{
+			{Key: "id", Value: outID},
+			{Key: "ns", Value: ns},
+			{Key: "nextBatch", Value: batch},
+		}},
+		{Key: "ok", Value: float64(1)},
+	}, true
+}
+
+func (h *Handler) handleKillCachedCursors(cs *ConnState, body bson.Raw) {
+	if h.deps.CachedCursors == nil || cs.Tenant == nil {
+		return
+	}
+	var doc bson.M
+	_ = bson.Unmarshal(body, &doc)
+	var ids []int64
+	if arr, ok := doc["cursors"].(bson.A); ok {
+		for _, v := range arr {
+			switch n := v.(type) {
+			case int64:
+				ids = append(ids, n)
+			case int32:
+				ids = append(ids, int64(n))
+			case float64:
+				ids = append(ids, int64(n))
+			}
+		}
+	}
+	h.deps.CachedCursors.KillMany(ids, cs.Tenant.TenantID, cs.Key)
 }
 
 var (

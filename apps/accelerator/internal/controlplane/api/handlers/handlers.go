@@ -214,3 +214,34 @@ func (h *Handlers) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
+
+// Invalidate clears cache entries for a tenant namespace and/or tags (Phase 3).
+// Body: { "db": "mydb", "coll": "orders", "tags": ["user:1"] }
+func (h *Handlers) Invalidate(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	var req struct {
+		DB   string   `json:"db"`
+		Coll string   `json:"coll"`
+		Tags []string `json:"tags"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+		// allow empty body with query params
+	}
+	if req.DB == "" {
+		req.DB = r.URL.Query().Get("db")
+	}
+	if req.Coll == "" {
+		req.Coll = r.URL.Query().Get("coll")
+	}
+	if err := h.policies.Invalidate(r.Context(), tenantID, req.DB, req.Coll, req.Tags); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "invalidated",
+		"tenantId": tenantID,
+		"db":       req.DB,
+		"coll":     req.Coll,
+		"tags":     req.Tags,
+	})
+}

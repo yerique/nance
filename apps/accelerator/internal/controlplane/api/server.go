@@ -57,6 +57,9 @@ func NewServer(
 		r.Put("/tenants/{tenantId}/policy/collections/{dbColl}", h.SetCollectionPolicy)
 		r.Put("/tenants/{tenantId}/policy/defaults", h.SetDefaultTTL)
 
+		// Explicit cache invalidation (Phase 3)
+		r.Post("/tenants/{tenantId}/invalidate", h.Invalidate)
+
 		// Tokens
 		r.Post("/tenants/{tenantId}/tokens", h.IssueToken)
 		r.Get("/tenants/{tenantId}/tokens", h.ListTokens)
