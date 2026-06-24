@@ -1,0 +1,33 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/apps/accelerator/controlplane
+/apps/accelerator/proxy
+bin/
+vendor/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Build / temp
+tmp/
+dist/
+*.log
