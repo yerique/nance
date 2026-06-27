@@ -31,7 +31,8 @@ func NewHandlers(
 	}
 }
 
-// writeJSON is a small helper.
+// writeJSON writes v as JSON. Prefer non-nil slices/maps from callers so empty
+// collections encode as [] / {} rather than null (Go's default for nil).
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -166,10 +167,10 @@ func (h *Handlers) SetDefaultTTL(w http.ResponseWriter, r *http.Request) {
 // ===== Token handlers =====
 
 type issueTokenResponse struct {
-	TokenID     string `json:"tokenId"`
-	RawToken    string `json:"rawToken"` // ONLY returned at issuance time
-	TenantID    string `json:"tenantId"`
-	Description string `json:"description,omitempty"`
+	TokenID     string    `json:"tokenId"`
+	RawToken    string    `json:"rawToken"` // ONLY returned at issuance time
+	TenantID    string    `json:"tenantId"`
+	Description string    `json:"description,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 }
 

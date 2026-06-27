@@ -6,9 +6,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/taeven/nance/accelerator/internal/controlplane/api/handlers"
 	"github.com/taeven/nance/accelerator/internal/controlplane/auth"
 	"github.com/taeven/nance/accelerator/internal/controlplane/service"
-	"github.com/taeven/nance/accelerator/internal/controlplane/api/handlers"
 )
 
 func NewServer(

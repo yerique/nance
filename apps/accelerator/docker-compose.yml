@@ -38,11 +38,6 @@ services:
     volumes:
       - mongodata:/data/db
 
-  # Redis is not required for Phase 0 but included for future phases
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
 
 volumes:
   pgdata:

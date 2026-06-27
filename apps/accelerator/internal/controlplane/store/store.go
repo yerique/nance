@@ -121,7 +121,8 @@ func (s *PostgresStore) ListTenants(ctx context.Context) ([]*model.Tenant, error
 	}
 	defer rows.Close()
 
-	var out []*model.Tenant
+	// Non-nil empty slice so JSON encodes as [] not null.
+	out := make([]*model.Tenant, 0)
 	for rows.Next() {
 		var t model.Tenant
 		if err := rows.Scan(&t.ID, &t.Name, &t.Status, &t.CreatedAt, &t.UpdatedAt); err != nil {
@@ -268,7 +269,8 @@ func (s *PostgresStore) ListTokensForTenant(ctx context.Context, tenantID string
 	}
 	defer rows.Close()
 
-	var out []*model.Token
+	// Non-nil empty slice so JSON encodes as [] not null.
+	out := make([]*model.Token, 0)
 	for rows.Next() {
 		var t model.Token
 		var expires, revoked sql.NullTime

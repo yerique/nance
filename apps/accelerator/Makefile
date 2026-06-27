@@ -1,6 +1,6 @@
 .PHONY: build build-proxy run run-proxy dev-up dev-down seed test test-integration lint
 
-export NANCE_MASTER_KEY ?= thisisexactly32byteslongforaes256!!
+export NANCE_MASTER_KEY ?= MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMQo=
 
 build:
 	go build -o bin/controlplane ./cmd/controlplane
