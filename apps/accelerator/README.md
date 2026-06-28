@@ -101,7 +101,7 @@ App / mongosh / Compass
  Tenant's real MongoDB (:27017 in local compose)
 ```
 
-- **Phase 2 read-through cache**: Redis-backed caching **opt-in per query** — query `collection_cache` (suffix `_cache`) and the proxy strips that suffix, reads/writes the real collection, and uses Redis for that read path. Query `collection` with no suffix to always hit MongoDB. Control-plane policy still sets TTL / max result size / key version per real collection. Fail-open if Redis is down. Set `NANCE_REDIS_ADDR`, `NANCE_CACHE_ENABLED=true`.
+- **Phase 2 read-through cache**: Redis-backed caching **opt-in per query** via `collection_cache` (suffix `_cache`). Proxy strips the suffix and uses the real collection; default TTL is **60 seconds** for all collections (override per tenant or per collection in policy). No suffix → always MongoDB. Fail-open if Redis is down. Set `NANCE_REDIS_ADDR`, `NANCE_CACHE_ENABLED=true`.
 - **Tenant isolation**: after PLAIN auth, each TCP connection is bound to one tenant; backend clients are never shared across tenants.
 - **Connection pooling**: many app-side connections collapse to a small driver pool per tenant on the real cluster.
 - **Topology lie**: `hello` / `isMaster` always reports a single writable primary (no replica-set host list).
@@ -199,4 +199,4 @@ make lint
 
 ## Next
 
-Phase 2 read-through cache is implemented (see [../../phase2.md](../../phase2.md)). Opt in per query with the `_cache` collection suffix (e.g. `db.orders_cache.find(...)` → real `orders` + cache). Policy API sets TTL/size defaults; proxy loads policies every `NANCE_POLICY_REFRESH_INTERVAL` (default 30s). Writes to the real collection invalidate that namespace in Redis.
+Phase 2 read-through cache is implemented (see [../../phase2.md](../../phase2.md)). Opt in per query with the `_cache` collection suffix (e.g. `db.orders_cache.find(...)` → real `orders` + cache at **60s TTL by default**). Override TTL/size via policy API; proxy loads policies every `NANCE_POLICY_REFRESH_INTERVAL` (default 30s). Writes to the real collection invalidate that namespace in Redis.

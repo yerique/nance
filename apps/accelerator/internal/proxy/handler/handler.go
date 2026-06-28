@@ -348,7 +348,7 @@ func (h *Handler) tryCacheRead(
 	if h.deps.Policies != nil {
 		dec = h.deps.Policies.Resolve(tenantID, dbName, collName)
 	} else {
-		dec = policy.Decision{Enabled: true, TTL: 60 * time.Second, MaxResultBytes: 1 << 20, CacheKeyVersion: 1}
+		dec = policy.Decision{Enabled: true, TTL: time.Duration(policy.DefaultTTLSeconds) * time.Second, MaxResultBytes: 1 << 20, CacheKeyVersion: 1}
 	}
 
 	key, err := cache.CacheKey(tenantID, dbName, collName, info.Name, msg.Body, dec.CacheKeyVersion)
@@ -577,7 +577,7 @@ func (h *Handler) maybePopulateCache(
 	if h.deps.Policies != nil {
 		dec = h.deps.Policies.Resolve(tenantID, dbName, collName)
 	} else {
-		dec = policy.Decision{Enabled: true, TTL: 60 * time.Second, MaxResultBytes: 1 << 20, CacheKeyVersion: 1}
+		dec = policy.Decision{Enabled: true, TTL: time.Duration(policy.DefaultTTLSeconds) * time.Second, MaxResultBytes: 1 << 20, CacheKeyVersion: 1}
 	}
 	key, err := cache.CacheKey(tenantID, dbName, collName, info.Name, raw, dec.CacheKeyVersion)
 	if err != nil {

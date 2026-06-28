@@ -51,7 +51,7 @@ func TestEngine_DefaultTTL(t *testing.T) {
 
 func TestEngine_ResolveAlwaysEnabledWithDefaults(t *testing.T) {
 	e := NewEngine(nil, nil, time.Minute)
-	// No policy at all — still enabled with built-in defaults (suffix opt-in path).
+	// No policy at all — still enabled with built-in 60s default (suffix opt-in path).
 	d := e.Resolve("unknown", "mydb", "orders")
 	if !d.Enabled || d.TTL != 60*time.Second || d.MaxResultBytes != 1<<20 || d.CacheKeyVersion != 1 {
 		t.Fatalf("unexpected defaults: %+v", d)

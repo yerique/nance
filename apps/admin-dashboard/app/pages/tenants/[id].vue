@@ -18,7 +18,7 @@ const tab = ref<'overview' | 'backend' | 'cache' | 'tokens' | 'members' | 'inval
 const tabs = [
   { id: 'overview' as const, label: 'Overview' },
   { id: 'backend' as const, label: 'Connection' },
-  { id: 'cache' as const, label: 'Cache policy' },
+  { id: 'cache' as const, label: 'Caching' },
   { id: 'tokens' as const, label: 'Tokens' },
   { id: 'members' as const, label: 'Members' },
   { id: 'invalidate' as const, label: 'Invalidate' },
@@ -41,10 +41,10 @@ const backendBusy = ref(false)
 const defaultTtl = ref(60)
 const defaultsBusy = ref(false)
 
-// New collection policy
+// Per-collection TTL overrides (real collection name, not *_cache)
 const newCollKey = ref('')
-const newCollEnabled = ref(true)
 const newCollTtl = ref(60)
+const newCollMaxBytes = ref<number | undefined>(undefined)
 const collBusy = ref(false)
 
 // Tokens
@@ -185,6 +185,8 @@ watch(tab, async (t) => {
 
 onMounted(async () => {
   await loadTenant()
+  // Prefetch policy so overview shows active default TTL
+  await loadPolicy()
 })
 
 // —— Backend ——
@@ -225,9 +227,14 @@ async function testBackend() {
 async function saveDefaults() {
   defaultsBusy.value = true
   try {
-    await api.setDefaultTtl(tenantId.value, Number(defaultTtl.value))
+    const ttl = Number(defaultTtl.value)
+    if (!ttl || ttl < 1) {
+      showFlash('error', 'Default TTL must be at least 1 second')
+      return
+    }
+    await api.setDefaultTtl(tenantId.value, ttl)
     await loadPolicy()
-    showFlash('success', 'Default TTL updated')
+    showFlash('success', `Default cache TTL set to ${ttl}s for all _cache queries`)
   }
   catch (e) {
     showFlash('error', api.apiErrorMessage(e))
@@ -242,7 +249,7 @@ async function upsertCollection(key: string, pol: CollectionPolicy) {
   try {
     await api.setCollectionPolicy(tenantId.value, key, pol)
     await loadPolicy()
-    showFlash('success', `Updated policy for ${key}`)
+    showFlash('success', `Override saved for ${key} (applies when clients use ${key.split('.').pop()}_cache)`)
   }
   catch (e) {
     showFlash('error', api.apiErrorMessage(e))
@@ -255,20 +262,51 @@ async function upsertCollection(key: string, pol: CollectionPolicy) {
 async function addCollection() {
   const key = newCollKey.value.trim()
   if (!key || !key.includes('.')) {
-    showFlash('error', 'Use db.collection format (e.g. mydb.orders)')
+    showFlash('error', 'Use real db.collection format (e.g. mydb.orders), not mydb.orders_cache')
     return
   }
-  await upsertCollection(key, {
-    enabled: newCollEnabled.value,
-    ttlSeconds: Number(newCollTtl.value) || 60,
-  })
+  if (key.endsWith('_cache')) {
+    showFlash('error', 'Use the real collection name (without _cache). Clients append _cache in queries.')
+    return
+  }
+  const ttl = Number(newCollTtl.value) || Number(defaultTtl.value) || 60
+  const pol: CollectionPolicy = {
+    enabled: true,
+    ttlSeconds: ttl,
+  }
+  if (newCollMaxBytes.value && newCollMaxBytes.value > 0) {
+    pol.maxResultBytes = Number(newCollMaxBytes.value)
+  }
+  await upsertCollection(key, pol)
   newCollKey.value = ''
+  newCollMaxBytes.value = undefined
+}
+
+async function removeCollectionOverride(key: string) {
+  // API has no delete; TTL 0 means inherit organization default in the proxy.
+  collBusy.value = true
+  try {
+    await api.setCollectionPolicy(tenantId.value, key, { enabled: true, ttlSeconds: 0 })
+    await loadPolicy()
+    showFlash('info', `${key} will inherit the organization default TTL (${defaultTtl.value}s)`)
+  }
+  catch (e) {
+    showFlash('error', api.apiErrorMessage(e))
+  }
+  finally {
+    collBusy.value = false
+  }
 }
 
 const collectionEntries = computed(() => {
   if (!policy.value?.collections) return []
   return Object.entries(policy.value.collections).map(([key, pol]) => ({ key, ...pol }))
 })
+
+function effectiveTtl(row: { ttlSeconds?: number }) {
+  if (row.ttlSeconds && row.ttlSeconds > 0) return row.ttlSeconds
+  return policy.value?.defaultTtlSeconds ?? defaultTtl.value ?? 60
+}
 
 // —— Tokens ——
 async function issueToken() {
@@ -331,7 +369,7 @@ async function runInvalidate() {
 <template>
   <div class="page">
     <div class="breadcrumb">
-      <NuxtLink to="/">Tenants</NuxtLink>
+      <NuxtLink to="/">Organizations</NuxtLink>
       <span>/</span>
       <span class="mono">{{ tenantId }}</span>
     </div>
@@ -339,7 +377,7 @@ async function runInvalidate() {
     <div class="page-header">
       <div>
         <h2>{{ tenant?.name || tenantId }}</h2>
-        <p class="subtitle mono">{{ tenantId }}</p>
+        <p class="subtitle">Organization · <span class="mono">{{ tenantId }}</span></p>
       </div>
       <span v-if="tenant" :class="statusBadgeClass(tenant.status)">{{ tenant.status }}</span>
     </div>
@@ -383,11 +421,24 @@ async function runInvalidate() {
       </div>
 
       <div v-if="tab === 'overview'" class="card">
-        <h3 class="card-title">Quick actions</h3>
+        <h3 class="card-title">How caching works</h3>
+        <p class="card-desc">
+          Clients opt in <strong>per query</strong> by using a collection name that ends with
+          <code class="mono">_cache</code>. The proxy strips that suffix, reads the real collection,
+          and serves results from Redis with a default TTL of
+          <strong>{{ policy?.defaultTtlSeconds ?? defaultTtl }} seconds</strong>
+          (override under <strong>Caching</strong>). Without the suffix, every query hits MongoDB.
+        </p>
+        <ul class="help-list">
+          <li><code class="mono">db.orders_cache.find(…)</code> — cached (real collection: <code class="mono">orders</code>)</li>
+          <li><code class="mono">db.orders.find(…)</code> — always bypasses cache</li>
+          <li>Writes to <code class="mono">orders</code> invalidate cached entries for that namespace</li>
+        </ul>
         <div class="form-actions">
           <button class="btn btn-secondary" type="button" @click="tab = 'backend'">Configure backend</button>
-          <button class="btn btn-secondary" type="button" @click="tab = 'cache'">Edit cache policy</button>
+          <button class="btn btn-secondary" type="button" @click="tab = 'cache'">Configure caching</button>
           <button class="btn btn-secondary" type="button" @click="tab = 'tokens'">Issue token</button>
+          <button class="btn btn-secondary" type="button" @click="tab = 'members'">Manage members</button>
           <button class="btn btn-secondary" type="button" @click="tab = 'invalidate'">Invalidate cache</button>
         </div>
       </div>
@@ -396,7 +447,7 @@ async function runInvalidate() {
       <div v-if="tab === 'backend'" class="card">
         <h3 class="card-title">MongoDB backend connection</h3>
         <p class="card-desc">
-          Store the tenant's real MongoDB URI. It is encrypted at rest with
+          Store this organization's real MongoDB URI. It is encrypted at rest with
           <code class="mono">NANCE_MASTER_KEY</code> and never returned by the API.
         </p>
         <div class="form-row">
@@ -421,42 +472,70 @@ async function runInvalidate() {
         </div>
       </div>
 
-      <!-- Cache policy -->
+      <!-- Caching -->
       <template v-if="tab === 'cache'">
+        <div class="card callout-card">
+          <h3 class="card-title">Opt-in with <code class="mono">_cache</code></h3>
+          <p class="card-desc" style="margin-bottom: 0.75rem;">
+            Every collection is eligible for caching. Developers choose per query by appending
+            <code class="mono">_cache</code> to the collection name. No policy toggle is required to turn caching on.
+          </p>
+          <div class="code-examples">
+            <div class="code-example">
+              <span class="badge badge-success">cached</span>
+              <code class="mono">db.orders_cache.find(&#123; status: "open" &#125;)</code>
+              <span class="text-dim text-sm">→ real <code class="mono">orders</code> · TTL {{ policy?.defaultTtlSeconds ?? defaultTtl }}s unless overridden</span>
+            </div>
+            <div class="code-example">
+              <span class="badge badge-muted">bypass</span>
+              <code class="mono">db.orders.find(&#123; status: "open" &#125;)</code>
+              <span class="text-dim text-sm">→ always MongoDB, never Redis</span>
+            </div>
+          </div>
+        </div>
+
         <div class="card">
           <h3 class="card-title">Default TTL</h3>
-          <p class="card-desc">Applied when a collection policy does not override TTL (seconds).</p>
+          <p class="card-desc">
+            Applied to <strong>all</strong> <code class="mono">*_cache</code> queries for this organization
+            unless a per-collection override is set below. Platform default is <strong>60 seconds</strong>.
+          </p>
           <div class="inline-form">
             <div class="form-row">
               <label for="default-ttl">Default TTL (seconds)</label>
               <input id="default-ttl" v-model.number="defaultTtl" type="number" min="1" step="1">
+              <span class="hint">Example: 60 caches results for one minute after each miss.</span>
             </div>
             <button class="btn btn-primary" type="button" :disabled="defaultsBusy" @click="saveDefaults">
-              {{ defaultsBusy ? 'Saving…' : 'Save defaults' }}
+              {{ defaultsBusy ? 'Saving…' : 'Save default TTL' }}
             </button>
           </div>
           <p v-if="policy" class="text-dim text-sm mt-2">
-            Cache key version: {{ policy.cacheKeyVersion }} · Updated {{ formatDate(policy.updatedAt) }}
+            Active default: <strong>{{ policy.defaultTtlSeconds }}s</strong>
+            · Cache key version: {{ policy.cacheKeyVersion }}
+            · Updated {{ formatDate(policy.updatedAt) }}
           </p>
         </div>
 
         <div class="card">
-          <h3 class="card-title">Collection policies</h3>
+          <h3 class="card-title">Per-collection overrides</h3>
           <p class="card-desc">
-            Only collections with <strong>enabled: true</strong> participate in read-through caching (Phase 2).
-            Key format: <code class="mono">db.collection</code>
+            Optional. Use the <strong>real</strong> collection name (<code class="mono">db.orders</code>, not
+            <code class="mono">db.orders_cache</code>) to set a different TTL or max cached result size for that namespace.
+            Leave empty to use the organization default ({{ policy?.defaultTtlSeconds ?? defaultTtl }}s) for every collection.
           </p>
 
           <div v-if="!collectionEntries.length" class="empty-state" style="padding: 1.5rem;">
-            <p>No per-collection policies yet. Add one below to enable caching.</p>
+            <p><strong>No overrides</strong> — all <code class="mono">*_cache</code> queries use the default TTL above.</p>
+            <p class="text-sm text-muted">Add an override only when a hot collection needs a shorter or longer TTL.</p>
           </div>
 
           <div v-else class="table-wrap mb-2">
             <table class="data-table">
               <thead>
                 <tr>
-                  <th>Collection</th>
-                  <th>Enabled</th>
+                  <th>Real collection</th>
+                  <th>Client uses</th>
                   <th>TTL (s)</th>
                   <th>Max result bytes</th>
                   <th />
@@ -465,21 +544,20 @@ async function runInvalidate() {
               <tbody>
                 <tr v-for="row in collectionEntries" :key="row.key">
                   <td class="mono">{{ row.key }}</td>
+                  <td class="mono text-sm">{{ row.key }}_cache</td>
                   <td>
-                    <span :class="row.enabled ? 'badge badge-success' : 'badge badge-muted'">
-                      {{ row.enabled ? 'on' : 'off' }}
-                    </span>
+                    <strong>{{ effectiveTtl(row) }}</strong>
+                    <span v-if="!row.ttlSeconds || row.ttlSeconds <= 0" class="text-dim text-sm"> (default)</span>
                   </td>
-                  <td>{{ row.ttlSeconds }}</td>
-                  <td class="text-muted">{{ row.maxResultBytes ?? '—' }}</td>
+                  <td class="text-muted">{{ row.maxResultBytes ?? 'default (1 MiB)' }}</td>
                   <td>
                     <button
                       class="btn btn-ghost btn-sm"
                       type="button"
                       :disabled="collBusy"
-                      @click="upsertCollection(row.key, { enabled: !row.enabled, ttlSeconds: row.ttlSeconds, maxResultBytes: row.maxResultBytes })"
+                      @click="removeCollectionOverride(row.key)"
                     >
-                      {{ row.enabled ? 'Disable' : 'Enable' }}
+                      Use default TTL
                     </button>
                   </td>
                 </tr>
@@ -487,28 +565,23 @@ async function runInvalidate() {
             </table>
           </div>
 
-          <h4 class="text-sm text-muted mb-1" style="font-weight: 600;">Add / update collection</h4>
+          <h4 class="text-sm text-muted mb-1" style="font-weight: 600;">Add / update override</h4>
           <div class="inline-form">
             <div class="form-row">
-              <label>db.collection</label>
+              <label>Real db.collection</label>
               <input v-model="newCollKey" class="mono" placeholder="mydb.orders">
+              <span class="hint">Not <code class="mono">mydb.orders_cache</code></span>
             </div>
             <div class="form-row">
               <label>TTL (s)</label>
-              <input v-model.number="newCollTtl" type="number" min="1" style="max-width: 100px;">
+              <input v-model.number="newCollTtl" type="number" min="1" style="max-width: 100px;" :placeholder="String(defaultTtl)">
             </div>
             <div class="form-row">
-              <label>Enabled</label>
-              <label class="toggle-row" style="padding-top: 0.4rem;">
-                <span class="toggle">
-                  <input v-model="newCollEnabled" type="checkbox">
-                  <span class="toggle-slider" />
-                </span>
-                <span class="text-sm">{{ newCollEnabled ? 'Yes' : 'No' }}</span>
-              </label>
+              <label>Max bytes (optional)</label>
+              <input v-model.number="newCollMaxBytes" type="number" min="1" style="max-width: 120px;" placeholder="1048576">
             </div>
             <button class="btn btn-primary" type="button" :disabled="collBusy" @click="addCollection">
-              Save policy
+              Save override
             </button>
           </div>
         </div>
@@ -675,7 +748,9 @@ async function runInvalidate() {
       <div v-if="tab === 'invalidate'" class="card">
         <h3 class="card-title">Explicit cache invalidation</h3>
         <p class="card-desc">
-          Clear cached entries for this tenant. Optionally scope by database, collection, and/or tags (Phase 3).
+          Flush Redis entries for this organization. Use the <strong>real</strong> collection name
+          (e.g. <code class="mono">orders</code>), matching what was stored from <code class="mono">orders_cache</code> reads.
+          Writes through the proxy already invalidate that namespace automatically.
         </p>
         <div class="grid-2">
           <div class="form-row">
@@ -683,8 +758,9 @@ async function runInvalidate() {
             <input v-model="invDb" class="mono" placeholder="mydb">
           </div>
           <div class="form-row">
-            <label>Collection (optional)</label>
+            <label>Real collection (optional)</label>
             <input v-model="invColl" class="mono" placeholder="orders">
+            <span class="hint">Not <code class="mono">orders_cache</code></span>
           </div>
         </div>
         <div class="form-row">
@@ -715,3 +791,34 @@ async function runInvalidate() {
     </template>
   </div>
 </template>
+
+<style scoped>
+.help-list {
+  margin: 0 0 1rem;
+  padding-left: 1.2rem;
+  color: var(--text-muted, #8b9bb0);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+.help-list li { margin-bottom: 0.35rem; }
+.callout-card {
+  border-color: rgba(61, 156, 240, 0.35);
+  background: linear-gradient(135deg, rgba(61, 156, 240, 0.08), transparent);
+}
+.code-examples {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.code-example {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 6px;
+  background: var(--bg, #0b0f14);
+  border: 1px solid var(--border-subtle, #1a2433);
+}
+.code-example code { font-size: 0.82rem; }
+</style>

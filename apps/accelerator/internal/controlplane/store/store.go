@@ -216,7 +216,7 @@ func (s *PostgresStore) GetCachePolicy(ctx context.Context, tenantID string) (*m
 	var collectionsJSON []byte
 	if err := row.Scan(&p.TenantID, &p.DefaultTtlSeconds, &collectionsJSON, &p.CacheKeyVersion, &p.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Return a sensible default instead of error for first use
+			// Default 60s TTL for all _cache collections; override via policy API.
 			return &model.CachePolicy{
 				TenantID:          tenantID,
 				DefaultTtlSeconds: 60,

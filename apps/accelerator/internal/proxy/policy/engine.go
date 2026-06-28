@@ -10,7 +10,12 @@ import (
 	"github.com/taeven/nance/accelerator/internal/model"
 )
 
-const defaultMaxResultBytes = 1 << 20 // 1 MiB
+const (
+	// DefaultTTLSeconds is applied to every _cache-suffixed collection unless
+	// the tenant overrides defaultTtlSeconds or a per-collection ttlSeconds.
+	DefaultTTLSeconds     = 60
+	defaultMaxResultBytes = 1 << 20 // 1 MiB
+)
 
 // Decision is the outcome of a policy lookup for one command.
 type Decision struct {
@@ -100,14 +105,15 @@ func (e *Engine) Lookup(tenantID, db, coll string) Decision {
 }
 
 // Resolve returns cache settings (TTL, max bytes, key version) for tenant/db/coll.
-// Always Enabled=true with sensible defaults so the "_cache" suffix opt-in can use the cache
-// without requiring a control-plane collection policy. Per-collection policy still overrides TTL/size.
+// Always Enabled=true: any collection accessed via the "_cache" suffix is cached.
+// Default TTL is DefaultTTLSeconds (60s); tenants can override via defaultTtlSeconds
+// or per-collection ttlSeconds / maxResultBytes in control-plane policy.
 func (e *Engine) Resolve(tenantID, db, coll string) Decision {
 	e.mu.RLock()
 	p := e.policies[tenantID]
 	e.mu.RUnlock()
 
-	ttlSec := 60
+	ttlSec := DefaultTTLSeconds
 	maxBytes := defaultMaxResultBytes
 	keyVer := 1
 	if p != nil {
@@ -120,6 +126,7 @@ func (e *Engine) Resolve(tenantID, db, coll string) Decision {
 		}
 		ns := db + "." + coll
 		if cp, ok := p.Collections[ns]; ok {
+			// Per-collection TTL override (0 = inherit tenant/global default)
 			if cp.TTLSeconds > 0 {
 				ttlSec = cp.TTLSeconds
 			}

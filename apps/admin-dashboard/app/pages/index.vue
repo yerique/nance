@@ -82,7 +82,10 @@ watch(() => auth.isLoggedIn.value, (v) => { if (v) load() })
     <div class="page-header">
       <div>
         <h2>Organizations</h2>
-        <p class="subtitle">Your tenants on Nance. Create one or accept an invite to get started.</p>
+        <p class="subtitle">
+          Manage backends, proxy tokens, and cache TTL. App queries opt into caching with the
+          <code class="mono">_cache</code> collection suffix (default TTL 60s).
+        </p>
       </div>
       <button class="btn btn-primary" type="button" @click="showCreate = true">
         + New organization
