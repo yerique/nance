@@ -1,54 +1,92 @@
 <script setup lang="ts">
-const route = useRoute()
+const auth = useAuth()
 const api = useAcceleratorApi()
+const route = useRoute()
 
-const health = ref<{ ok: boolean, accelerator: string } | null>(null)
+function needsOnboarding() {
+  return auth.isLoggedIn.value && !auth.user.value?.name?.trim()
+}
 
-onMounted(async () => {
-  try {
-    health.value = await api.checkHealth()
-  }
-  catch {
-    health.value = { ok: false, accelerator: 'unknown' }
-  }
+onMounted(() => {
+  auth.loadFromStorage()
 })
 
-function isActive(path: string) {
-  if (path === '/') return route.path === '/'
-  return route.path.startsWith(path)
+watch([() => auth.ready.value, () => auth.isLoggedIn.value, () => auth.user.value?.name, () => route.path], () => {
+  if (!auth.ready.value) return
+  if (!auth.isLoggedIn.value && route.path !== '/login') {
+    navigateTo('/login')
+    return
+  }
+  if (auth.isLoggedIn.value && needsOnboarding() && route.path !== '/onboarding') {
+    navigateTo('/onboarding')
+  }
+}, { immediate: true })
+
+async function onLogout() {
+  try {
+    await api.logout()
+  }
+  catch { /* ignore */ }
+  auth.clearSession()
+  await navigateTo('/login')
 }
 </script>
 
 <template>
   <div class="app-shell">
-    <aside class="sidebar">
-      <div class="sidebar-brand">
-        <h1>Nance</h1>
-        <p>Accelerator Admin</p>
-      </div>
-      <nav class="sidebar-nav">
-        <NuxtLink
-          to="/"
-          class="nav-item"
-          :class="{ active: isActive('/') && route.path === '/' }"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
-          </svg>
-          <span>Tenants</span>
-        </NuxtLink>
+    <header class="topbar">
+      <NuxtLink to="/" class="brand">
+        <span class="logo-mark">N</span>
+        <span>Nance Admin</span>
+      </NuxtLink>
+      <nav class="nav">
+        <NuxtLink to="/">Organizations</NuxtLink>
       </nav>
-      <div class="sidebar-footer">
-        <div v-if="health" :class="health.ok ? 'text-success' : 'text-danger'">
-          {{ health.ok ? '● Control plane OK' : '● Control plane unreachable' }}
-        </div>
-        <div v-if="health" class="text-dim mt-1" style="word-break: break-all;">
-          {{ health.accelerator }}
-        </div>
+      <div v-if="auth.user" class="user-menu">
+        <span class="user-email">{{ auth.user.name || auth.user.email }}</span>
+        <button class="btn btn-ghost btn-sm" type="button" @click="onLogout">Sign out</button>
       </div>
-    </aside>
+    </header>
     <main class="main">
       <slot />
     </main>
   </div>
 </template>
+
+<style scoped>
+.app-shell { min-height: 100vh; display: flex; flex-direction: column; }
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+  background: var(--surface, #12151c);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 600;
+  text-decoration: none;
+  color: inherit;
+}
+.logo-mark {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.35rem;
+  background: var(--accent, #5b8def);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+.nav { display: flex; gap: 1rem; flex: 1; }
+.nav a { color: inherit; opacity: 0.8; text-decoration: none; }
+.nav a.router-link-active { opacity: 1; font-weight: 600; }
+.user-menu { display: flex; align-items: center; gap: 0.75rem; }
+.user-email { font-size: 0.85rem; opacity: 0.75; }
+.main { flex: 1; padding: 1.5rem; max-width: 1100px; width: 100%; margin: 0 auto; }
+.btn-sm { padding: 0.35rem 0.65rem; font-size: 0.8rem; }
+</style>

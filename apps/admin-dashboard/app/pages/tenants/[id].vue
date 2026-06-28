@@ -3,6 +3,8 @@ import type {
   CachePolicy,
   CollectionPolicy,
   IssueTokenResponse,
+  OrganizationInvite,
+  OrganizationMember,
   SavingsReport,
   Tenant,
   Token,
@@ -12,12 +14,13 @@ const route = useRoute()
 const api = useAcceleratorApi()
 const tenantId = computed(() => String(route.params.id || ''))
 
-const tab = ref<'overview' | 'backend' | 'cache' | 'tokens' | 'invalidate' | 'savings'>('overview')
+const tab = ref<'overview' | 'backend' | 'cache' | 'tokens' | 'members' | 'invalidate' | 'savings'>('overview')
 const tabs = [
   { id: 'overview' as const, label: 'Overview' },
   { id: 'backend' as const, label: 'Connection' },
   { id: 'cache' as const, label: 'Cache policy' },
   { id: 'tokens' as const, label: 'Tokens' },
+  { id: 'members' as const, label: 'Members' },
   { id: 'invalidate' as const, label: 'Invalidate' },
   { id: 'savings' as const, label: 'Savings' },
 ]
@@ -54,6 +57,13 @@ const invDb = ref('')
 const invColl = ref('')
 const invTags = ref('')
 const invBusy = ref(false)
+
+// Members
+const members = ref<OrganizationMember[]>([])
+const pendingInvites = ref<OrganizationInvite[]>([])
+const inviteEmail = ref('')
+const inviteRole = ref<'member' | 'admin' | 'owner'>('member')
+const membersBusy = ref(false)
 
 function showFlash(type: 'success' | 'error' | 'info' | 'warning', msg: string) {
   flash.value = { type, msg }
@@ -105,10 +115,72 @@ async function loadSavings() {
   }
 }
 
+async function loadMembers() {
+  try {
+    const [m, inv] = await Promise.all([
+      api.listMembers(tenantId.value),
+      api.listTenantInvites(tenantId.value).catch(() => [] as OrganizationInvite[]),
+    ])
+    members.value = m
+    pendingInvites.value = inv
+  }
+  catch (e) {
+    showFlash('error', `Members: ${api.apiErrorMessage(e)}`)
+  }
+}
+
+async function sendInvite() {
+  if (!inviteEmail.value.trim()) return
+  membersBusy.value = true
+  try {
+    await api.inviteMember(tenantId.value, inviteEmail.value.trim(), inviteRole.value)
+    inviteEmail.value = ''
+    showFlash('success', 'Invite sent')
+    await loadMembers()
+  }
+  catch (e) {
+    showFlash('error', api.apiErrorMessage(e))
+  }
+  finally {
+    membersBusy.value = false
+  }
+}
+
+async function onRemoveMember(userId: string) {
+  membersBusy.value = true
+  try {
+    await api.removeMember(tenantId.value, userId)
+    showFlash('success', 'Member removed')
+    await loadMembers()
+  }
+  catch (e) {
+    showFlash('error', api.apiErrorMessage(e))
+  }
+  finally {
+    membersBusy.value = false
+  }
+}
+
+async function onRevokeInvite(inviteId: string) {
+  membersBusy.value = true
+  try {
+    await api.revokeInvite(tenantId.value, inviteId)
+    showFlash('success', 'Invite revoked')
+    await loadMembers()
+  }
+  catch (e) {
+    showFlash('error', api.apiErrorMessage(e))
+  }
+  finally {
+    membersBusy.value = false
+  }
+}
+
 watch(tab, async (t) => {
   if (t === 'cache' && !policy.value) await loadPolicy()
   if (t === 'tokens') await loadTokens()
   if (t === 'savings') await loadSavings()
+  if (t === 'members') await loadMembers()
 })
 
 onMounted(async () => {
@@ -519,6 +591,85 @@ async function runInvalidate() {
           </div>
         </div>
       </template>
+
+      <!-- Members -->
+      <div v-if="tab === 'members'" class="card">
+        <h3 class="card-title">User management</h3>
+        <p class="card-desc">Invite teammates by email. They sign in with the same email and accept the invite from Organizations.</p>
+        <div class="grid-2" style="align-items: end;">
+          <div class="form-row">
+            <label>Email</label>
+            <input v-model="inviteEmail" type="email" placeholder="teammate@company.com">
+          </div>
+          <div class="form-row">
+            <label>Role</label>
+            <select v-model="inviteRole">
+              <option value="member">member</option>
+              <option value="admin">admin</option>
+              <option value="owner">owner</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" type="button" :disabled="membersBusy || !inviteEmail.trim()" @click="sendInvite">
+            {{ membersBusy ? 'Working…' : 'Send invite' }}
+          </button>
+        </div>
+
+        <h4 class="mt-3">Members</h4>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Name</th>
+                <th>Role</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in members" :key="m.userId">
+                <td>{{ m.email || m.userId }}</td>
+                <td>{{ m.name || '—' }}</td>
+                <td><span class="badge">{{ m.role }}</span></td>
+                <td>
+                  <button class="btn btn-danger btn-sm" type="button" :disabled="membersBusy" @click="onRemoveMember(m.userId)">
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <template v-if="pendingInvites.length">
+          <h4 class="mt-3">Pending invites</h4>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Email</th>
+                  <th>Role</th>
+                  <th>Expires</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="inv in pendingInvites" :key="inv.id">
+                  <td>{{ inv.email }}</td>
+                  <td>{{ inv.role }}</td>
+                  <td class="text-sm text-muted">{{ inv.expires_at }}</td>
+                  <td>
+                    <button class="btn btn-ghost btn-sm" type="button" :disabled="membersBusy" @click="onRevokeInvite(inv.id)">
+                      Revoke
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </div>
 
       <!-- Invalidate -->
       <div v-if="tab === 'invalidate'" class="card">

@@ -1,13 +1,18 @@
 import type {
+  AuthVerifyResponse,
   CachePolicy,
   CollectionPolicy,
   InvalidateRequest,
   InvalidateResponse,
   IssueTokenResponse,
+  OrganizationInvite,
+  OrganizationMember,
+  OrganizationSummary,
   SavingsReport,
   StatusResponse,
   Tenant,
   Token,
+  User,
 } from '~/types/accelerator'
 
 function apiErrorMessage(err: unknown): string {
@@ -15,25 +20,126 @@ function apiErrorMessage(err: unknown): string {
   return e.data?.error || e.data?.statusMessage || e.statusMessage || e.message || 'Request failed'
 }
 
+function authHeaders(): Record<string, string> {
+  const { token } = useAuth()
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  if (token.value) {
+    headers.Authorization = `Bearer ${token.value}`
+  }
+  return headers
+}
+
 export function useAcceleratorApi() {
+  async function requestCode(email: string) {
+    return $fetch<StatusResponse>('/api/auth/request-code', {
+      method: 'POST',
+      body: { email },
+    })
+  }
+
+  async function verifyCode(email: string, code: string) {
+    return $fetch<AuthVerifyResponse>('/api/auth/verify', {
+      method: 'POST',
+      body: { email, code },
+    })
+  }
+
+  async function updateProfile(name: string) {
+    return $fetch<User>('/api/me', {
+      method: 'PATCH',
+      headers: authHeaders(),
+      body: { name },
+    })
+  }
+
+  async function logout() {
+    return $fetch<StatusResponse>('/api/auth/logout', {
+      method: 'POST',
+      headers: authHeaders(),
+    })
+  }
+
+  async function me() {
+    return $fetch<User>('/api/me', { headers: authHeaders() })
+  }
+
+  async function listOrganizations() {
+    return $fetch<OrganizationSummary[]>('/api/me/organizations', { headers: authHeaders() })
+  }
+
+  async function createOrganization(name: string, id?: string) {
+    return $fetch<OrganizationSummary>('/api/me/organizations', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: { name, id },
+    })
+  }
+
+  async function listMyInvites() {
+    return $fetch<OrganizationInvite[]>('/api/me/invites', { headers: authHeaders() })
+  }
+
+  async function acceptInvite(inviteId: string) {
+    return $fetch<OrganizationSummary>(`/api/me/invites/${encodeURIComponent(inviteId)}/accept`, {
+      method: 'POST',
+      headers: authHeaders(),
+    })
+  }
+
   async function listTenants() {
-    return $fetch<Tenant[]>('/api/tenants')
+    return $fetch<Tenant[]>('/api/tenants', { headers: authHeaders() })
   }
 
   async function getTenant(tenantId: string) {
-    return $fetch<Tenant>(`/api/tenants/${encodeURIComponent(tenantId)}`)
+    return $fetch<Tenant>(`/api/tenants/${encodeURIComponent(tenantId)}`, { headers: authHeaders() })
   }
 
   async function createTenant(id: string, name: string) {
     return $fetch<Tenant>('/api/tenants', {
       method: 'POST',
+      headers: authHeaders(),
       body: { id, name },
     })
+  }
+
+  async function listMembers(tenantId: string) {
+    return $fetch<OrganizationMember[]>(`/api/tenants/${encodeURIComponent(tenantId)}/members`, {
+      headers: authHeaders(),
+    })
+  }
+
+  async function inviteMember(tenantId: string, email: string, role?: string) {
+    return $fetch<OrganizationInvite>(`/api/tenants/${encodeURIComponent(tenantId)}/invites`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: { email, role },
+    })
+  }
+
+  async function listTenantInvites(tenantId: string) {
+    return $fetch<OrganizationInvite[]>(`/api/tenants/${encodeURIComponent(tenantId)}/invites`, {
+      headers: authHeaders(),
+    })
+  }
+
+  async function revokeInvite(tenantId: string, inviteId: string) {
+    return $fetch<StatusResponse>(
+      `/api/tenants/${encodeURIComponent(tenantId)}/invites/${encodeURIComponent(inviteId)}`,
+      { method: 'DELETE', headers: authHeaders() },
+    )
+  }
+
+  async function removeMember(tenantId: string, userId: string) {
+    return $fetch<StatusResponse>(
+      `/api/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
+      { method: 'DELETE', headers: authHeaders() },
+    )
   }
 
   async function setBackend(tenantId: string, uri: string) {
     return $fetch<StatusResponse>(`/api/tenants/${encodeURIComponent(tenantId)}/backend`, {
       method: 'POST',
+      headers: authHeaders(),
       body: { uri },
     })
   }
@@ -41,16 +147,20 @@ export function useAcceleratorApi() {
   async function testBackend(tenantId: string) {
     return $fetch<StatusResponse>(`/api/tenants/${encodeURIComponent(tenantId)}/backend/test`, {
       method: 'POST',
+      headers: authHeaders(),
     })
   }
 
   async function getPolicy(tenantId: string) {
-    return $fetch<CachePolicy>(`/api/tenants/${encodeURIComponent(tenantId)}/policy`)
+    return $fetch<CachePolicy>(`/api/tenants/${encodeURIComponent(tenantId)}/policy`, {
+      headers: authHeaders(),
+    })
   }
 
   async function setDefaultTtl(tenantId: string, defaultTtlSeconds: number) {
     return $fetch<StatusResponse>(`/api/tenants/${encodeURIComponent(tenantId)}/policy/defaults`, {
       method: 'PUT',
+      headers: authHeaders(),
       body: { defaultTtlSeconds },
     })
   }
@@ -58,17 +168,20 @@ export function useAcceleratorApi() {
   async function setCollectionPolicy(tenantId: string, dbColl: string, policy: CollectionPolicy) {
     return $fetch<StatusResponse>(
       `/api/tenants/${encodeURIComponent(tenantId)}/policy/collections/${encodeURIComponent(dbColl)}`,
-      { method: 'PUT', body: policy },
+      { method: 'PUT', headers: authHeaders(), body: policy },
     )
   }
 
   async function listTokens(tenantId: string) {
-    return $fetch<Token[]>(`/api/tenants/${encodeURIComponent(tenantId)}/tokens`)
+    return $fetch<Token[]>(`/api/tenants/${encodeURIComponent(tenantId)}/tokens`, {
+      headers: authHeaders(),
+    })
   }
 
   async function issueToken(tenantId: string, description?: string) {
     return $fetch<IssueTokenResponse>(`/api/tenants/${encodeURIComponent(tenantId)}/tokens`, {
       method: 'POST',
+      headers: authHeaders(),
       body: { description },
     })
   }
@@ -76,18 +189,22 @@ export function useAcceleratorApi() {
   async function revokeToken(tokenId: string) {
     return $fetch<StatusResponse>(`/api/tokens/${encodeURIComponent(tokenId)}`, {
       method: 'DELETE',
+      headers: authHeaders(),
     })
   }
 
   async function invalidate(tenantId: string, req: InvalidateRequest = {}) {
     return $fetch<InvalidateResponse>(`/api/tenants/${encodeURIComponent(tenantId)}/invalidate`, {
       method: 'POST',
+      headers: authHeaders(),
       body: req,
     })
   }
 
   async function getSavings(tenantId: string) {
-    return $fetch<SavingsReport>(`/api/tenants/${encodeURIComponent(tenantId)}/savings`)
+    return $fetch<SavingsReport>(`/api/tenants/${encodeURIComponent(tenantId)}/savings`, {
+      headers: authHeaders(),
+    })
   }
 
   async function checkHealth() {
@@ -95,9 +212,23 @@ export function useAcceleratorApi() {
   }
 
   return {
+    requestCode,
+    verifyCode,
+    updateProfile,
+    logout,
+    me,
+    listOrganizations,
+    createOrganization,
+    listMyInvites,
+    acceptInvite,
     listTenants,
     getTenant,
     createTenant,
+    listMembers,
+    inviteMember,
+    listTenantInvites,
+    revokeInvite,
+    removeMember,
     setBackend,
     testBackend,
     getPolicy,

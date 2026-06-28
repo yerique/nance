@@ -1,21 +1,29 @@
 <script setup lang="ts">
-import type { Tenant } from '~/types/accelerator'
+import type { OrganizationInvite, OrganizationSummary } from '~/types/accelerator'
 
 const api = useAcceleratorApi()
+const auth = useAuth()
 
-const tenants = ref<Tenant[]>([])
+const orgs = ref<OrganizationSummary[]>([])
+const invites = ref<OrganizationInvite[]>([])
 const loading = ref(true)
 const error = ref('')
 const showCreate = ref(false)
 const creating = ref(false)
 const createError = ref('')
 const form = reactive({ id: '', name: '' })
+const accepting = ref<string | null>(null)
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    tenants.value = await api.listTenants()
+    const [o, inv] = await Promise.all([
+      api.listOrganizations(),
+      api.listMyInvites(),
+    ])
+    orgs.value = o
+    invites.value = inv
   }
   catch (e) {
     error.value = api.apiErrorMessage(e)
@@ -27,17 +35,17 @@ async function load() {
 
 async function onCreate() {
   createError.value = ''
-  if (!form.id.trim() || !form.name.trim()) {
-    createError.value = 'ID and name are required'
+  if (!form.name.trim()) {
+    createError.value = 'Organization name is required'
     return
   }
   creating.value = true
   try {
-    const t = await api.createTenant(form.id.trim(), form.name.trim())
+    const org = await api.createOrganization(form.name.trim(), form.id.trim() || undefined)
     showCreate.value = false
     form.id = ''
     form.name = ''
-    await navigateTo(`/tenants/${encodeURIComponent(t.id)}`)
+    await navigateTo(`/tenants/${encodeURIComponent(org.id)}`)
   }
   catch (e) {
     createError.value = api.apiErrorMessage(e)
@@ -47,30 +55,69 @@ async function onCreate() {
   }
 }
 
-onMounted(load)
+async function onAccept(id: string) {
+  accepting.value = id
+  try {
+    const org = await api.acceptInvite(id)
+    await navigateTo(`/tenants/${encodeURIComponent(org.id)}`)
+  }
+  catch (e) {
+    error.value = api.apiErrorMessage(e)
+  }
+  finally {
+    accepting.value = null
+  }
+}
+
+onMounted(() => {
+  auth.loadFromStorage()
+  if (auth.isLoggedIn.value) load()
+})
+
+watch(() => auth.isLoggedIn.value, (v) => { if (v) load() })
 </script>
 
 <template>
   <div class="page">
     <div class="page-header">
       <div>
-        <h2>Tenants</h2>
-        <p class="subtitle">Manage accelerator tenants, backends, cache policies, and access tokens.</p>
+        <h2>Organizations</h2>
+        <p class="subtitle">Your tenants on Nance. Create one or accept an invite to get started.</p>
       </div>
       <button class="btn btn-primary" type="button" @click="showCreate = true">
-        + New tenant
+        + New organization
       </button>
     </div>
 
     <div v-if="error" class="alert alert-error">{{ error }}</div>
 
-    <div v-if="loading" class="loading">Loading tenants…</div>
+    <section v-if="invites.length" class="card invites-card mb-3">
+      <h3>Pending invites</h3>
+      <ul class="invite-list">
+        <li v-for="inv in invites" :key="inv.id">
+          <div>
+            <strong>{{ inv.tenantName || inv.tenantId }}</strong>
+            <span class="badge">{{ inv.role }}</span>
+          </div>
+          <button
+            class="btn btn-primary btn-sm"
+            type="button"
+            :disabled="accepting === inv.id"
+            @click="onAccept(inv.id)"
+          >
+            {{ accepting === inv.id ? 'Accepting…' : 'Accept' }}
+          </button>
+        </li>
+      </ul>
+    </section>
 
-    <div v-else-if="!tenants.length" class="card empty-state">
-      <p><strong>No tenants yet</strong></p>
-      <p>Create a tenant to configure a MongoDB backend and issue proxy tokens.</p>
+    <div v-if="loading" class="loading">Loading organizations…</div>
+
+    <div v-else-if="!orgs.length" class="card empty-state">
+      <p><strong>No organizations yet</strong></p>
+      <p>Create an organization to configure MongoDB backends and issue proxy tokens.</p>
       <button class="btn btn-primary mt-2" type="button" @click="showCreate = true">
-        Create first tenant
+        Create organization
       </button>
     </div>
 
@@ -78,69 +125,78 @@ onMounted(load)
       <table class="data-table">
         <thead>
           <tr>
-            <th>ID</th>
             <th>Name</th>
+            <th>ID</th>
+            <th>Your role</th>
             <th>Status</th>
-            <th>Created</th>
-            <th />
           </tr>
         </thead>
         <tbody>
-          <tr v-for="t in tenants" :key="t.id">
+          <tr v-for="o in orgs" :key="o.id">
             <td>
-              <NuxtLink class="row-link mono" :to="`/tenants/${encodeURIComponent(t.id)}`">
-                {{ t.id }}
-              </NuxtLink>
+              <NuxtLink :to="`/tenants/${encodeURIComponent(o.id)}`">{{ o.name }}</NuxtLink>
             </td>
-            <td>{{ t.name }}</td>
-            <td>
-              <span :class="statusBadgeClass(t.status)">{{ t.status || 'unknown' }}</span>
-            </td>
-            <td class="text-muted text-sm">{{ formatDate(t.created_at) }}</td>
-            <td>
-              <NuxtLink class="btn btn-ghost btn-sm" :to="`/tenants/${encodeURIComponent(t.id)}`">
-                Manage →
-              </NuxtLink>
-            </td>
+            <td><code>{{ o.id }}</code></td>
+            <td><span class="badge">{{ o.role }}</span></td>
+            <td>{{ o.status }}</td>
           </tr>
         </tbody>
       </table>
     </div>
 
-    <!-- Create modal -->
     <div v-if="showCreate" class="modal-backdrop" @click.self="showCreate = false">
-      <div class="modal">
-        <h3>Create tenant</h3>
+      <div class="modal card">
+        <h3>Create organization</h3>
         <div v-if="createError" class="alert alert-error">{{ createError }}</div>
-        <div class="form-row">
-          <label for="tenant-id">Tenant ID</label>
-          <input
-            id="tenant-id"
-            v-model="form.id"
-            class="mono"
-            placeholder="e.g. demo or proj_abc123"
-            autocomplete="off"
-          >
-          <span class="hint">Stable identifier used in proxy auth username and APIs.</span>
-        </div>
-        <div class="form-row">
-          <label for="tenant-name">Display name</label>
-          <input
-            id="tenant-name"
-            v-model="form.name"
-            placeholder="My Project"
-            autocomplete="off"
-          >
-        </div>
-        <div class="form-actions">
+        <label class="field">
+          <span>Name</span>
+          <input v-model="form.name" type="text" placeholder="Acme Corp" required>
+        </label>
+        <label class="field">
+          <span>ID <em>(optional slug)</em></span>
+          <input v-model="form.id" type="text" placeholder="acme-corp">
+        </label>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" type="button" @click="showCreate = false">Cancel</button>
           <button class="btn btn-primary" type="button" :disabled="creating" @click="onCreate">
-            {{ creating ? 'Creating…' : 'Create tenant' }}
-          </button>
-          <button class="btn btn-secondary" type="button" :disabled="creating" @click="showCreate = false">
-            Cancel
+            {{ creating ? 'Creating…' : 'Create' }}
           </button>
         </div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.invites-card h3 { margin-top: 0; }
+.invite-list { list-style: none; padding: 0; margin: 0; }
+.invite-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+}
+.badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  background: rgba(91, 141, 239, 0.2);
+}
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+  display: grid; place-items: center; z-index: 50; padding: 1rem;
+}
+.modal { width: min(420px, 100%); padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
+.field { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.875rem; }
+.field input {
+  padding: 0.5rem 0.65rem; border-radius: 0.35rem;
+  border: 1px solid var(--border, #2a2f3a); background: var(--surface-2, #161a22); color: inherit;
+}
+.mb-3 { margin-bottom: 1rem; }
+.btn-sm { padding: 0.35rem 0.65rem; font-size: 0.8rem; }
+</style>

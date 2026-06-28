@@ -15,6 +15,8 @@ export async function acceleratorFetch<T>(
     method?: string
     body?: unknown
     query?: Record<string, string>
+    /** Prefer user session from Authorization header over server admin token */
+    userAuth?: boolean
   } = {},
 ): Promise<T> {
   const { baseUrl, adminToken } = getAcceleratorConfig(event)
@@ -23,9 +25,15 @@ export async function acceleratorFetch<T>(
   const headers: Record<string, string> = {
     Accept: 'application/json',
   }
-  if (adminToken) {
+
+  const incoming = getHeader(event, 'authorization')
+  if (options.userAuth !== false && incoming?.startsWith('Bearer ')) {
+    headers.Authorization = incoming
+  }
+  else if (adminToken) {
     headers.Authorization = `Bearer ${adminToken}`
   }
+
   if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json'
   }

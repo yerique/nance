@@ -101,7 +101,7 @@ App / mongosh / Compass
  Tenant's real MongoDB (:27017 in local compose)
 ```
 
-- **Phase 2 read-through cache**: Redis-backed caching for explicitly enabled collections (`PUT .../policy/collections/{db.coll}` with `enabled: true`). Fail-open if Redis is down. Set `NANCE_REDIS_ADDR`, `NANCE_CACHE_ENABLED=true`.
+- **Phase 2 read-through cache**: Redis-backed caching **opt-in per query** — query `collection_cache` (suffix `_cache`) and the proxy strips that suffix, reads/writes the real collection, and uses Redis for that read path. Query `collection` with no suffix to always hit MongoDB. Control-plane policy still sets TTL / max result size / key version per real collection. Fail-open if Redis is down. Set `NANCE_REDIS_ADDR`, `NANCE_CACHE_ENABLED=true`.
 - **Tenant isolation**: after PLAIN auth, each TCP connection is bound to one tenant; backend clients are never shared across tenants.
 - **Connection pooling**: many app-side connections collapse to a small driver pool per tenant on the real cluster.
 - **Topology lie**: `hello` / `isMaster` always reports a single writable primary (no replica-set host list).
@@ -133,19 +133,44 @@ App / mongosh / Compass
 | `NANCE_PROXY_CURSOR_IDLE_TIMEOUT` | `10m` | Prune idle server-side cursor state |
 | `NANCE_PROXY_ALLOW_UNAUTH` | `false` | Dev only: allow commands without auth |
 
-## Control plane API (Phase 0, all under `/api/v1`, Bearer protected)
+## Control plane API (under `/api/v1`)
 
-- `POST   /tenants` — create tenant `{ "id": "proj_abc", "name": "My Project" }`
+### Auth (email OTP — public)
+
+- `POST /auth/request-code` — `{ "email": "you@co.com" }` sends a 6-digit code (dev: logged by control plane)
+- `POST /auth/verify` — `{ "email", "code", "name?" }` → `{ "token", "user" }` (session bearer, 30 days)
+- `POST /auth/logout` — invalidate session (Bearer user token)
+- `GET  /me` — current user
+
+### Organizations (Bearer user session)
+
+- `GET  /me/organizations` — orgs the user belongs to (with `role`)
+- `POST /me/organizations` — create org/tenant `{ "name", "id?" }` (caller becomes `owner`)
+- `GET  /me/invites` — pending invites for the user's email
+- `POST /me/invites/{inviteId}/accept`
+
+### Tenant ops (Bearer user session **or** `NANCE_ADMIN_TOKEN`)
+
+Membership required for user sessions; admin token is platform superuser.
+
+- `POST   /tenants` — create tenant (user becomes owner when not platform admin)
+- `GET    /tenants` — user's orgs, or all tenants for platform admin
 - `GET    /tenants/{tenantId}`
-- `GET    /tenants`
+- `GET    /tenants/{tenantId}/members`
+- `POST   /tenants/{tenantId}/invites` — `{ "email", "role?" }` (owner/admin)
+- `GET    /tenants/{tenantId}/invites`
+- `DELETE /tenants/{tenantId}/invites/{inviteId}`
+- `DELETE /tenants/{tenantId}/members/{userId}`
 - `POST   /tenants/{tenantId}/backend` — `{ "uri": "mongodb://real..." }` (stored encrypted)
-- `POST   /tenants/{tenantId}/backend/test` — validates connectivity (no URI leaked)
+- `POST   /tenants/{tenantId}/backend/test`
 - `GET    /tenants/{tenantId}/policy`
-- `PUT    /tenants/{tenantId}/policy/collections/{db.coll}` — per-collection caching rules (used in Phase 2)
+- `PUT    /tenants/{tenantId}/policy/collections/{db.coll}`
 - `PUT    /tenants/{tenantId}/policy/defaults`
-- `POST   /tenants/{tenantId}/tokens` — returns `{ "rawToken": "...", "tokenId": "..." }` (copy rawToken)
+- `POST   /tenants/{tenantId}/tokens` — returns `{ "rawToken", "tokenId", ... }`
 - `GET    /tenants/{tenantId}/tokens`
 - `DELETE /tokens/{tokenId}`
+
+Set `NANCE_REQUIRE_USER_AUTH=1` to disable legacy open mode when `NANCE_ADMIN_TOKEN` is empty.
 
 Health: `/healthz`, `/readyz`, `/metrics` on the control plane port; proxy exposes the same paths on `NANCE_PROXY_HEALTH_LISTEN`.
 
@@ -174,4 +199,4 @@ make lint
 
 ## Next
 
-Phase 2 read-through cache is implemented (see [../../phase2.md](../../phase2.md)). Enable per collection via the control plane policy API; proxy loads policies every `NANCE_POLICY_REFRESH_INTERVAL` (default 30s). Write commands invalidate the collection registry set in Redis.
+Phase 2 read-through cache is implemented (see [../../phase2.md](../../phase2.md)). Opt in per query with the `_cache` collection suffix (e.g. `db.orders_cache.find(...)` → real `orders` + cache). Policy API sets TTL/size defaults; proxy loads policies every `NANCE_POLICY_REFRESH_INTERVAL` (default 30s). Writes to the real collection invalidate that namespace in Redis.

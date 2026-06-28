@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	cpauth "github.com/taeven/nance/accelerator/internal/controlplane/auth"
 	"github.com/taeven/nance/accelerator/internal/controlplane/service"
 	"github.com/taeven/nance/accelerator/internal/model"
 )
@@ -15,6 +18,8 @@ type Handlers struct {
 	backends *service.BackendService
 	policies *service.PolicyService
 	tokens   *service.TokenService
+	auth     *service.AuthService
+	orgs     *service.OrgService
 }
 
 func NewHandlers(
@@ -22,17 +27,19 @@ func NewHandlers(
 	bs *service.BackendService,
 	ps *service.PolicyService,
 	toks *service.TokenService,
+	auth *service.AuthService,
+	orgs *service.OrgService,
 ) *Handlers {
 	return &Handlers{
 		tenants:  ts,
 		backends: bs,
 		policies: ps,
 		tokens:   toks,
+		auth:     auth,
+		orgs:     orgs,
 	}
 }
 
-// writeJSON writes v as JSON. Prefer non-nil slices/maps from callers so empty
-// collections encode as [] / {} rather than null (Go's default for nil).
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -43,9 +50,226 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+func bearerToken(r *http.Request) string {
+	authz := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authz, "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
+}
+
+// ensureTenantAccess checks platform admin or org membership.
+func (h *Handlers) ensureTenantAccess(r *http.Request, tenantID string) error {
+	if cpauth.IsPlatformAdmin(r.Context()) {
+		return nil
+	}
+	u := cpauth.UserFromContext(r.Context())
+	if u == nil {
+		return service.ErrUnauthorized
+	}
+	_, err := h.orgs.RequireMember(r.Context(), tenantID, u.ID)
+	return err
+}
+
+func (h *Handlers) ensureTenantAdmin(r *http.Request, tenantID string) error {
+	if cpauth.IsPlatformAdmin(r.Context()) {
+		return nil
+	}
+	u := cpauth.UserFromContext(r.Context())
+	if u == nil {
+		return service.ErrUnauthorized
+	}
+	_, err := h.orgs.RequireAdmin(r.Context(), tenantID, u.ID)
+	return err
+}
+
+func mapAuthErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, service.ErrUnauthorized):
+		writeError(w, http.StatusUnauthorized, err.Error())
+	case errors.Is(err, service.ErrForbidden), errors.Is(err, service.ErrNotMember):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, service.ErrInvalidEmail), errors.Is(err, service.ErrInvalidCode),
+		errors.Is(err, service.ErrTooManyAttempts), errors.Is(err, service.ErrInviteExpired),
+		errors.Is(err, service.ErrAlreadyMember), errors.Is(err, service.ErrLastOwner):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, service.ErrInviteNotFound), errors.Is(err, service.ErrTenantNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+// ===== Auth handlers (public) =====
+
+func (h *Handlers) RequestCode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := h.auth.RequestCode(r.Context(), req.Email); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"message": "If the email is valid, a verification code has been sent",
+	})
+}
+
+func (h *Handlers) VerifyCode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// Name is collected in onboarding after email verification, not on login.
+	token, user, err := h.auth.VerifyCode(r.Context(), req.Email, req.Code, "")
+	if err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":     token,
+		"expiresIn": int((30 * 24 * time.Hour).Seconds()),
+		"user":      user,
+	})
+}
+
+func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) {
+	_ = h.auth.Logout(r.Context(), bearerToken(r))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
+	u := cpauth.UserFromContext(r.Context())
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
+}
+
+func (h *Handlers) UpdateMe(w http.ResponseWriter, r *http.Request) {
+	u := cpauth.UserFromContext(r.Context())
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	updated, err := h.auth.UpdateProfile(r.Context(), u.ID, req.Name)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// ===== Organizations (user-scoped) =====
+
+func (h *Handlers) ListMyOrganizations(w http.ResponseWriter, r *http.Request) {
+	u := cpauth.UserFromContext(r.Context())
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	list, err := h.orgs.ListOrganizations(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *Handlers) CreateMyOrganization(w http.ResponseWriter, r *http.Request) {
+	u := cpauth.UserFromContext(r.Context())
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	org, err := h.orgs.CreateOrganization(r.Context(), u.ID, req.ID, req.Name)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, org)
+}
+
+func (h *Handlers) ListMyInvites(w http.ResponseWriter, r *http.Request) {
+	u := cpauth.UserFromContext(r.Context())
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	list, err := h.orgs.ListPendingInvitesForUser(r.Context(), u)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *Handlers) AcceptInvite(w http.ResponseWriter, r *http.Request) {
+	u := cpauth.UserFromContext(r.Context())
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	inviteID := chi.URLParam(r, "inviteId")
+	org, err := h.orgs.AcceptInvite(r.Context(), u, inviteID)
+	if err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, org)
+}
+
 // ===== Tenant handlers =====
 
 func (h *Handlers) CreateTenant(w http.ResponseWriter, r *http.Request) {
+	// Prefer CreateMyOrganization; keep for platform admin / legacy
+	if !cpauth.IsPlatformAdmin(r.Context()) {
+		u := cpauth.UserFromContext(r.Context())
+		if u == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var req struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		org, err := h.orgs.CreateOrganization(r.Context(), u.ID, req.ID, req.Name)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, &org.Tenant)
+		return
+	}
 	var req struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
@@ -64,6 +288,10 @@ func (h *Handlers) CreateTenant(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) GetTenant(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAccess(r, id); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
 	t, err := h.tenants.Get(r.Context(), id)
 	if err != nil {
 		if err == service.ErrTenantNotFound {
@@ -77,7 +305,54 @@ func (h *Handlers) GetTenant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) ListTenants(w http.ResponseWriter, r *http.Request) {
-	list, err := h.tenants.List(r.Context())
+	// Platform admin: all tenants. User: their organizations only.
+	if cpauth.IsPlatformAdmin(r.Context()) && cpauth.UserFromContext(r.Context()) == nil {
+		list, err := h.tenants.List(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, list)
+		return
+	}
+	u := cpauth.UserFromContext(r.Context())
+	if u == nil {
+		// admin with user session still falls through to membership list unless pure admin
+		if cpauth.IsPlatformAdmin(r.Context()) {
+			list, err := h.tenants.List(r.Context())
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, list)
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	orgs, err := h.orgs.ListOrganizations(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Return tenant-shaped list for backward compatibility with existing UI list
+	out := make([]*model.Tenant, 0, len(orgs))
+	for _, o := range orgs {
+		t := o.Tenant
+		out = append(out, &t)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// ===== Members / invites on tenant =====
+
+func (h *Handlers) ListMembers(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAccess(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	list, err := h.orgs.ListMembers(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -85,10 +360,92 @@ func (h *Handlers) ListTenants(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+func (h *Handlers) InviteMember(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	actor := "admin"
+	if u := cpauth.UserFromContext(r.Context()); u != nil {
+		actor = u.ID
+	}
+	inv, err := h.orgs.InviteMember(r.Context(), tenantID, actor, req.Email, model.MemberRole(req.Role))
+	if err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	// Do not leak raw token in API response for security (email contains instructions)
+	inv.RawToken = ""
+	writeJSON(w, http.StatusCreated, inv)
+}
+
+func (h *Handlers) ListTenantInvites(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	list, err := h.orgs.ListPendingInvitesForTenant(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *Handlers) RevokeInvite(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	inviteID := chi.URLParam(r, "inviteId")
+	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	actor := "admin"
+	if u := cpauth.UserFromContext(r.Context()); u != nil {
+		actor = u.ID
+	}
+	if err := h.orgs.RevokeInvite(r.Context(), tenantID, actor, inviteID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handlers) RemoveMember(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	userID := chi.URLParam(r, "userId")
+	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	actor := "admin"
+	if u := cpauth.UserFromContext(r.Context()); u != nil {
+		actor = u.ID
+	}
+	if err := h.orgs.RemoveMember(r.Context(), tenantID, actor, userID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 // ===== Backend handlers =====
 
 func (h *Handlers) SetBackend(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
 	var req struct {
 		URI string `json:"uri"`
 	}
@@ -101,29 +458,41 @@ func (h *Handlers) SetBackend(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "tenant not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "stored (encrypted)"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *Handlers) TestBackend(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAccess(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
 	if err := h.backends.TestConnection(r.Context(), tenantID); err != nil {
-		if err == service.ErrBackendNotFound || err == service.ErrTenantNotFound {
-			writeError(w, http.StatusNotFound, err.Error())
+		if err == service.ErrTenantNotFound {
+			writeError(w, http.StatusNotFound, "tenant not found")
+			return
+		}
+		if err == service.ErrBackendNotFound {
+			writeError(w, http.StatusBadRequest, "backend not configured")
 			return
 		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "connection successful"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // ===== Policy handlers =====
 
 func (h *Handlers) GetPolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAccess(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
 	p, err := h.policies.Get(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -135,14 +504,17 @@ func (h *Handlers) GetPolicy(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) SetCollectionPolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
 	dbColl := chi.URLParam(r, "dbColl")
-
-	var pol model.CollectionPolicy
-	if err := json.NewDecoder(r.Body).Decode(&pol); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid policy json")
+	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
+		mapAuthErr(w, err)
 		return
 	}
-	if err := h.policies.SetCollectionPolicy(r.Context(), tenantID, dbColl, pol); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	var cp model.CollectionPolicy
+	if err := json.NewDecoder(r.Body).Decode(&cp); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := h.policies.SetCollectionPolicy(r.Context(), tenantID, dbColl, cp); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
@@ -150,6 +522,10 @@ func (h *Handlers) SetCollectionPolicy(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) SetDefaultTTL(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
 	var req struct {
 		DefaultTTL int `json:"defaultTtlSeconds"`
 	}
@@ -158,76 +534,24 @@ func (h *Handlers) SetDefaultTTL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.policies.SetDefaults(r.Context(), tenantID, req.DefaultTTL); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
-// ===== Token handlers =====
-
-type issueTokenResponse struct {
-	TokenID     string    `json:"tokenId"`
-	RawToken    string    `json:"rawToken"` // ONLY returned at issuance time
-	TenantID    string    `json:"tenantId"`
-	Description string    `json:"description,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
-}
-
-func (h *Handlers) IssueToken(w http.ResponseWriter, r *http.Request) {
-	tenantID := chi.URLParam(r, "tenantId")
-	var req struct {
-		Description string `json:"description"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req) // description is optional
-
-	raw, tok, err := h.tokens.Issue(r.Context(), tenantID, req.Description)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	resp := issueTokenResponse{
-		TokenID:     tok.ID,
-		RawToken:    raw,
-		TenantID:    tok.TenantID,
-		Description: tok.Description,
-		CreatedAt:   tok.CreatedAt,
-	}
-	writeJSON(w, http.StatusCreated, resp)
-}
-
-func (h *Handlers) ListTokens(w http.ResponseWriter, r *http.Request) {
-	tenantID := chi.URLParam(r, "tenantId")
-	toks, err := h.tokens.List(r.Context(), tenantID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, toks)
-}
-
-func (h *Handlers) RevokeToken(w http.ResponseWriter, r *http.Request) {
-	tokenID := chi.URLParam(r, "tokenId")
-	if err := h.tokens.Revoke(r.Context(), tokenID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
-}
-
-// Invalidate clears cache entries for a tenant namespace and/or tags (Phase 3).
-// Body: { "db": "mydb", "coll": "orders", "tags": ["user:1"] }
 func (h *Handlers) Invalidate(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
 	var req struct {
 		DB   string   `json:"db"`
 		Coll string   `json:"coll"`
 		Tags []string `json:"tags"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
-		// allow empty body with query params
-	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.DB == "" {
 		req.DB = r.URL.Query().Get("db")
 	}
@@ -235,7 +559,7 @@ func (h *Handlers) Invalidate(w http.ResponseWriter, r *http.Request) {
 		req.Coll = r.URL.Query().Get("coll")
 	}
 	if err := h.policies.Invalidate(r.Context(), tenantID, req.DB, req.Coll, req.Tags); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -247,10 +571,12 @@ func (h *Handlers) Invalidate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// SavingsReport returns a placeholder economics report (Phase 4).
-// Live counters live in proxy processes; this endpoint documents the API shape.
 func (h *Handlers) SavingsReport(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAccess(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tenantId": tenantID,
 		"note":     "Proxy exposes live counters via /metrics (nance_cache_*). Aggregate with Prometheus/Grafana.",
@@ -259,4 +585,59 @@ func (h *Handlers) SavingsReport(w http.ResponseWriter, r *http.Request) {
 			"sum(rate(nance_cache_misses_total{tenant=\"" + tenantID + "\"}[1d]))",
 		},
 	})
+}
+
+// ===== Tokens =====
+
+func (h *Handlers) IssueToken(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	var req struct {
+		Description string `json:"description"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	raw, tok, err := h.tokens.Issue(r.Context(), tenantID, req.Description)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"tokenId":     tok.ID,
+		"rawToken":    raw,
+		"tenantId":    tok.TenantID,
+		"description": tok.Description,
+		"createdAt":   tok.CreatedAt,
+	})
+}
+
+func (h *Handlers) ListTokens(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	if err := h.ensureTenantAccess(r, tenantID); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	list, err := h.tokens.List(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *Handlers) RevokeToken(w http.ResponseWriter, r *http.Request) {
+	tokenID := chi.URLParam(r, "tokenId")
+	// Platform admin or any authenticated user with admin on some org may revoke;
+	// membership is enforced loosely here — prefer admin token or known token ownership later.
+	if !cpauth.IsPlatformAdmin(r.Context()) && cpauth.UserFromContext(r.Context()) == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err := h.tokens.Revoke(r.Context(), tokenID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }

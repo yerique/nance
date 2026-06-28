@@ -109,6 +109,26 @@ func collectionFromCommand(raw bson.Raw, cmdName string) string {
 	return ""
 }
 
+// CacheCollectionSuffix is the opt-in marker developers append to a collection
+// name so the proxy will serve the query from the read-through cache.
+// The real backend collection is the name with this suffix removed once.
+const CacheCollectionSuffix = "_cache"
+
+// ResolveCacheCollection returns the real backend collection name and whether
+// the client opted into caching by appending CacheCollectionSuffix.
+// Example: "orders_cache" -> ("orders", true); "orders" -> ("orders", false).
+// Only the final suffix is stripped (not every occurrence).
+func ResolveCacheCollection(coll string) (real string, useCache bool) {
+	if coll == "" || !strings.HasSuffix(coll, CacheCollectionSuffix) {
+		return coll, false
+	}
+	// Require a non-empty real name (bare "_cache" is not a valid opt-in).
+	if len(coll) == len(CacheCollectionSuffix) {
+		return coll, false
+	}
+	return coll[:len(coll)-len(CacheCollectionSuffix)], true
+}
+
 // IsHandshake returns true for hello/isMaster (allowed before auth).
 func IsHandshake(name string) bool {
 	switch strings.ToLower(name) {

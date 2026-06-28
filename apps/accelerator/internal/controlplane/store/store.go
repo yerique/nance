@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,6 +46,34 @@ type Store interface {
 	// ListActiveTokenHashes returns id+hash for non-revoked, non-expired tokens of a tenant (proxy auth).
 	ListActiveTokenHashes(ctx context.Context, tenantID string) ([]TokenHashRow, error)
 	RevokeToken(ctx context.Context, id string) error
+
+	// Users / sessions / email OTP
+	UpsertUserByEmail(ctx context.Context, email, name string) (*model.User, error)
+	GetUserByID(ctx context.Context, id string) (*model.User, error)
+	GetUserByEmail(ctx context.Context, email string) (*model.User, error)
+	UpdateUserName(ctx context.Context, id, name string) error
+	SetEmailVerificationCode(ctx context.Context, email, codeHash string, expiresAt time.Time) error
+	GetEmailVerificationCode(ctx context.Context, email string) (codeHash string, expiresAt time.Time, attempts int, err error)
+	IncrementEmailVerificationAttempts(ctx context.Context, email string) error
+	ClearEmailVerificationCode(ctx context.Context, email string) error
+	CreateSession(ctx context.Context, id, userID, tokenHash string, expiresAt time.Time) error
+	GetSessionByTokenHash(ctx context.Context, tokenHash string) (sessionID, userID string, expiresAt time.Time, err error)
+	DeleteSession(ctx context.Context, sessionID string) error
+	DeleteSessionByTokenHash(ctx context.Context, tokenHash string) error
+
+	// Organization membership / invites
+	AddMember(ctx context.Context, tenantID, userID string, role model.MemberRole) error
+	RemoveMember(ctx context.Context, tenantID, userID string) error
+	GetMember(ctx context.Context, tenantID, userID string) (*model.OrganizationMember, error)
+	ListMembers(ctx context.Context, tenantID string) ([]*model.OrganizationMember, error)
+	ListOrganizationsForUser(ctx context.Context, userID string) ([]*model.OrganizationSummary, error)
+	CreateInvite(ctx context.Context, inv *model.OrganizationInvite, tokenHash string) error
+	GetInviteByID(ctx context.Context, id string) (*model.OrganizationInvite, error)
+	GetPendingInviteByTokenHash(ctx context.Context, tokenHash string) (*model.OrganizationInvite, error)
+	ListPendingInvitesForEmail(ctx context.Context, email string) ([]*model.OrganizationInvite, error)
+	ListPendingInvitesForTenant(ctx context.Context, tenantID string) ([]*model.OrganizationInvite, error)
+	MarkInviteAccepted(ctx context.Context, id string) error
+	DeleteInvite(ctx context.Context, id string) error
 
 	// Audit (best effort)
 	RecordAudit(ctx context.Context, tenantID, actor, action string, payload any) error

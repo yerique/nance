@@ -70,9 +70,12 @@ func main() {
 		}
 	}
 	tokenSvc := service.NewTokenService(pgStore)
+	mailer := &service.LogMailer{Log: logger}
+	authSvc := service.NewAuthService(pgStore, mailer, logger)
+	orgSvc := service.NewOrgService(pgStore, mailer)
 
 	// 5. HTTP server
-	handler := api.NewServer(tenantSvc, backendSvc, policySvc, tokenSvc)
+	handler := api.NewServer(tenantSvc, backendSvc, policySvc, tokenSvc, authSvc, orgSvc)
 
 	srv := &http.Server{
 		Addr:         cfg.Port,
@@ -172,4 +175,3 @@ func stripSQLComments(stmt string) string {
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
-

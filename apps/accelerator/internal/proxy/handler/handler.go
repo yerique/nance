@@ -27,27 +27,27 @@ import (
 
 // ConnState is per-TCP-connection mutable state.
 type ConnState struct {
-	ID           int32
-	Key          string // unique key for cursor scoping
-	Tenant       *auth.TenantContext
-	Authed       bool
-	RemoteAddr   string
-	AllowUnauth  bool
-	connIDGen    *atomic.Int32
+	ID          int32
+	Key         string // unique key for cursor scoping
+	Tenant      *auth.TenantContext
+	Authed      bool
+	RemoteAddr  string
+	AllowUnauth bool
+	connIDGen   *atomic.Int32
 }
 
 // Deps bundles handler dependencies.
 type Deps struct {
-	Auth           *auth.Validator
-	Pool           *pool.Manager
-	Cursors        *cursor.Registry
-	CachedCursors  *cachedcursor.Store
-	Cache          *cache.Coordinator
-	Policies       *policy.Engine
-	Limiter        *ratelimit.Limiter
-	Log            *slog.Logger
-	ConnID         *atomic.Int32 // global connection id counter for hello replies
-	DefaultBatch   int32
+	Auth          *auth.Validator
+	Pool          *pool.Manager
+	Cursors       *cursor.Registry
+	CachedCursors *cachedcursor.Store
+	Cache         *cache.Coordinator
+	Policies      *policy.Engine
+	Limiter       *ratelimit.Limiter
+	Log           *slog.Logger
+	ConnID        *atomic.Int32 // global connection id counter for hello replies
+	DefaultBatch  int32
 }
 
 // Handler processes one OP_MSG request and returns a reply body document.
@@ -256,11 +256,22 @@ func (h *Handler) handlePassthrough(ctx context.Context, cs *ConnState, msg *wir
 	if collName == "" {
 		collName = fieldString(cmdDoc, info.Name)
 	}
+
+	// Developers opt into caching by querying collection+"_cache". The proxy strips
+	// that suffix and talks to the real collection; non-suffixed names bypass cache entirely.
+	realColl, useCache := command.ResolveCacheCollection(collName)
+	if realColl != collName {
+		cmdDoc = setFieldString(cmdDoc, info.Name, realColl)
+		info.Collection = realColl
+		collName = realColl
+	}
 	nsLabel := command.FormatNS(dbName, collName)
 
-	// Phase 2: try read-through cache for eligible reads
-	if reply, handled := h.tryCacheRead(ctx, cs, tenantID, dbName, collName, nsLabel, cmdLower, msg, info, cmdDoc); handled {
-		return reply, nil
+	// Phase 2: try read-through cache only when the client used the _cache suffix
+	if useCache {
+		if reply, handled := h.tryCacheRead(ctx, cs, tenantID, dbName, collName, nsLabel, cmdLower, msg, info, cmdDoc); handled {
+			return reply, nil
+		}
 	}
 
 	client, err := h.deps.Pool.Get(ctx, tenantID)
@@ -300,13 +311,13 @@ func (h *Handler) handlePassthrough(ctx context.Context, cs *ConnState, msg *wir
 		return reply, err
 	}
 
-	// Invalidate on successful writes to cacheable namespaces
+	// Writes always target the real collection; invalidate that namespace's cache entries.
 	if info.Kind == command.KindWrite && collName != "" {
 		h.maybeInvalidate(ctx, tenantID, dbName, collName, nsLabel)
 	}
 
-	// Populate cache after successful miss path for cacheable reads (when tryCacheRead did not handle)
-	if info.Kind == command.KindRead && collName != "" {
+	// Populate cache only for opt-in (_cache suffix) reads that missed the coordinator path
+	if useCache && info.Kind == command.KindRead && collName != "" {
 		h.maybePopulateCache(ctx, tenantID, dbName, collName, nsLabel, cmdLower, msg.Body, info, reply)
 	}
 
@@ -314,6 +325,8 @@ func (h *Handler) handlePassthrough(ctx context.Context, cs *ConnState, msg *wir
 }
 
 // tryCacheRead attempts a cache hit / singleflight miss populate for find/aggregate/etc.
+// Caller must only invoke this when the client opted in via the "_cache" collection suffix;
+// collName is the real backend collection (suffix already stripped).
 // handled=true means caller should return reply directly (even if reply is an error document).
 func (h *Handler) tryCacheRead(
 	ctx context.Context,
@@ -323,17 +336,19 @@ func (h *Handler) tryCacheRead(
 	info command.Info,
 	cmdDoc bson.D,
 ) (reply any, handled bool) {
-	if h.deps.Cache == nil || h.deps.Policies == nil || collName == "" {
+	if h.deps.Cache == nil || collName == "" {
 		return nil, false
 	}
 	if bypass, reason := cache.ShouldBypassCache(info.Name, msg.Body, info.IsTxn); bypass {
 		telemetry.CacheBypass.WithLabelValues(tenantID, reason).Inc()
 		return nil, false
 	}
-	dec := h.deps.Policies.Lookup(tenantID, dbName, collName)
-	if !dec.Enabled {
-		telemetry.CacheBypass.WithLabelValues(tenantID, "policy_disabled").Inc()
-		return nil, false
+	// Policy supplies TTL / max bytes / key version; opt-in is the _cache suffix, not Enabled.
+	var dec policy.Decision
+	if h.deps.Policies != nil {
+		dec = h.deps.Policies.Resolve(tenantID, dbName, collName)
+	} else {
+		dec = policy.Decision{Enabled: true, TTL: 60 * time.Second, MaxResultBytes: 1 << 20, CacheKeyVersion: 1}
 	}
 
 	key, err := cache.CacheKey(tenantID, dbName, collName, info.Name, msg.Body, dec.CacheKeyVersion)
@@ -531,11 +546,7 @@ func isErrorReply(reply any) bool {
 }
 
 func (h *Handler) maybeInvalidate(ctx context.Context, tenantID, dbName, collName, nsLabel string) {
-	if h.deps.Cache == nil || h.deps.Policies == nil {
-		return
-	}
-	dec := h.deps.Policies.Lookup(tenantID, dbName, collName)
-	if !dec.Enabled {
+	if h.deps.Cache == nil || collName == "" {
 		return
 	}
 	go func() {
@@ -548,7 +559,7 @@ func (h *Handler) maybeInvalidate(ctx context.Context, tenantID, dbName, collNam
 }
 
 // maybePopulateCache is used when the normal passthrough path ran (cache miss path outside coordinator).
-// With tryCacheRead handling the happy path, this is mostly a safety net for non-cursor reads.
+// Caller must only invoke for _cache-suffix opt-in reads; collName is the real backend collection.
 func (h *Handler) maybePopulateCache(
 	ctx context.Context,
 	tenantID, dbName, collName, nsLabel, cmdLower string,
@@ -556,15 +567,17 @@ func (h *Handler) maybePopulateCache(
 	info command.Info,
 	reply any,
 ) {
-	if h.deps.Cache == nil || h.deps.Policies == nil || isErrorReply(reply) {
+	if h.deps.Cache == nil || isErrorReply(reply) {
 		return
 	}
 	if bypass, _ := cache.ShouldBypassCache(info.Name, raw, info.IsTxn); bypass {
 		return
 	}
-	dec := h.deps.Policies.Lookup(tenantID, dbName, collName)
-	if !dec.Enabled {
-		return
+	var dec policy.Decision
+	if h.deps.Policies != nil {
+		dec = h.deps.Policies.Resolve(tenantID, dbName, collName)
+	} else {
+		dec = policy.Decision{Enabled: true, TTL: 60 * time.Second, MaxResultBytes: 1 << 20, CacheKeyVersion: 1}
 	}
 	key, err := cache.CacheKey(tenantID, dbName, collName, info.Name, raw, dec.CacheKeyVersion)
 	if err != nil {
@@ -891,6 +904,17 @@ func fieldString(cmd bson.D, key string) string {
 		}
 	}
 	return ""
+}
+
+// setFieldString sets or appends a string field on a command document (e.g. find/aggregate collection).
+func setFieldString(cmd bson.D, key, value string) bson.D {
+	for i, e := range cmd {
+		if e.Key == key {
+			cmd[i].Value = value
+			return cmd
+		}
+	}
+	return append(cmd, bson.E{Key: key, Value: value})
 }
 
 func fieldDoc(cmd bson.D, key string) bson.D {

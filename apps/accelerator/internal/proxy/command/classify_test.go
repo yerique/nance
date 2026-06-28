@@ -21,6 +21,27 @@ func TestClassifyFind(t *testing.T) {
 	}
 }
 
+func TestResolveCacheCollection(t *testing.T) {
+	cases := []struct {
+		in        string
+		wantReal  string
+		wantCache bool
+	}{
+		{"users", "users", false},
+		{"users_cache", "users", true},
+		{"orders_v2_cache", "orders_v2", true},
+		{"foo_cache_cache", "foo_cache", true}, // only final suffix stripped
+		{"_cache", "_cache", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		real, use := ResolveCacheCollection(tc.in)
+		if real != tc.wantReal || use != tc.wantCache {
+			t.Fatalf("%q: got (%q, %v), want (%q, %v)", tc.in, real, use, tc.wantReal, tc.wantCache)
+		}
+	}
+}
+
 func TestIsPreAuthAllowed(t *testing.T) {
 	if !IsPreAuthAllowed("hello") || !IsPreAuthAllowed("saslStart") || IsPreAuthAllowed("find") {
 		t.Fatal("pre-auth gate wrong")

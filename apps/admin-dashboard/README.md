@@ -84,3 +84,8 @@ API surface mirrors the control plane (see accelerator README):
 - Backend URIs are write-only from the UI; the API never returns them.
 - Issued proxy tokens appear only once in the UI — copy immediately.
 - Run the dashboard only on trusted networks in production; protect with the same controls as the control plane admin API.
+
+
+
+
+i want to add a feature in so that proxy can optionally run in standalone mode without having to configure the tenants using control plane. user should be able to provide the mongo uri and collection names with ttl and get connection uri in the logs with they can use later to connect to the proxy. Create proper unit tests for this feature.

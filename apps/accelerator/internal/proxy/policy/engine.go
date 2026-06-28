@@ -14,9 +14,9 @@ const defaultMaxResultBytes = 1 << 20 // 1 MiB
 
 // Decision is the outcome of a policy lookup for one command.
 type Decision struct {
-	Enabled        bool
-	TTL            time.Duration
-	MaxResultBytes int
+	Enabled         bool
+	TTL             time.Duration
+	MaxResultBytes  int
 	CacheKeyVersion int
 }
 
@@ -79,9 +79,11 @@ func (e *Engine) refresh(ctx context.Context) {
 	e.mu.Unlock()
 }
 
-// Lookup returns whether caching is enabled for tenant/db/coll.
-// Collections must be explicitly enabled (disabled by default).
+// Lookup returns whether caching is enabled for tenant/db/coll via control-plane policy.
+// Prefer Resolve for the data-plane path: clients opt in with a "_cache" collection suffix;
+// policy only supplies TTL / size / key-version overrides.
 func (e *Engine) Lookup(tenantID, db, coll string) Decision {
+	d := e.Resolve(tenantID, db, coll)
 	e.mu.RLock()
 	p := e.policies[tenantID]
 	e.mu.RUnlock()
@@ -93,22 +95,44 @@ func (e *Engine) Lookup(tenantID, db, coll string) Decision {
 	if !ok || !cp.Enabled {
 		return Decision{Enabled: false, CacheKeyVersion: p.CacheKeyVersion}
 	}
-	ttlSec := cp.TTLSeconds
-	if ttlSec <= 0 {
-		ttlSec = p.DefaultTtlSeconds
-	}
-	if ttlSec <= 0 {
-		ttlSec = 60
-	}
+	d.Enabled = true
+	return d
+}
+
+// Resolve returns cache settings (TTL, max bytes, key version) for tenant/db/coll.
+// Always Enabled=true with sensible defaults so the "_cache" suffix opt-in can use the cache
+// without requiring a control-plane collection policy. Per-collection policy still overrides TTL/size.
+func (e *Engine) Resolve(tenantID, db, coll string) Decision {
+	e.mu.RLock()
+	p := e.policies[tenantID]
+	e.mu.RUnlock()
+
+	ttlSec := 60
 	maxBytes := defaultMaxResultBytes
-	if cp.MaxResultBytes != nil && *cp.MaxResultBytes > 0 {
-		maxBytes = *cp.MaxResultBytes
+	keyVer := 1
+	if p != nil {
+		keyVer = p.CacheKeyVersion
+		if keyVer <= 0 {
+			keyVer = 1
+		}
+		if p.DefaultTtlSeconds > 0 {
+			ttlSec = p.DefaultTtlSeconds
+		}
+		ns := db + "." + coll
+		if cp, ok := p.Collections[ns]; ok {
+			if cp.TTLSeconds > 0 {
+				ttlSec = cp.TTLSeconds
+			}
+			if cp.MaxResultBytes != nil && *cp.MaxResultBytes > 0 {
+				maxBytes = *cp.MaxResultBytes
+			}
+		}
 	}
 	return Decision{
 		Enabled:         true,
 		TTL:             time.Duration(ttlSec) * time.Second,
 		MaxResultBytes:  maxBytes,
-		CacheKeyVersion: p.CacheKeyVersion,
+		CacheKeyVersion: keyVer,
 	}
 }
 

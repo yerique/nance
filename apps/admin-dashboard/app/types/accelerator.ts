@@ -6,10 +6,51 @@ export interface Tenant {
   updated_at: string
 }
 
+export interface User {
+  id: string
+  email: string
+  name: string
+  created_at: string
+  updated_at: string
+}
+
+export type MemberRole = 'owner' | 'admin' | 'member'
+
+export interface OrganizationSummary extends Tenant {
+  role: MemberRole
+}
+
+export interface OrganizationMember {
+  tenantId: string
+  userId: string
+  email?: string
+  name?: string
+  role: MemberRole
+  created_at: string
+}
+
+export interface OrganizationInvite {
+  id: string
+  tenantId: string
+  tenantName?: string
+  email: string
+  role: MemberRole
+  invitedBy?: string
+  expires_at: string
+  accepted_at?: string | null
+  created_at: string
+}
+
+export interface AuthVerifyResponse {
+  token: string
+  expiresIn: number
+  user: User
+}
+
 export interface CollectionPolicy {
   enabled: boolean
   ttlSeconds: number
-  maxResultBytes?: number | null
+  maxResultBytes?: number
 }
 
 export interface CachePolicy {
@@ -39,6 +80,7 @@ export interface IssueTokenResponse {
 
 export interface StatusResponse {
   status: string
+  [key: string]: unknown
 }
 
 export interface InvalidateRequest {
@@ -57,11 +99,6 @@ export interface InvalidateResponse {
 
 export interface SavingsReport {
   tenantId: string
-  note: string
-  suggestedQueries: string[]
-}
-
-export interface ApiError {
-  error: string
-  statusCode?: number
+  note?: string
+  suggestedQueries?: string[]
 }

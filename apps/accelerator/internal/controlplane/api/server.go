@@ -16,57 +16,74 @@ func NewServer(
 	bs *service.BackendService,
 	ps *service.PolicyService,
 	toks *service.TokenService,
+	authSvc *service.AuthService,
+	orgSvc *service.OrgService,
 ) http.Handler {
 	r := chi.NewRouter()
 
-	// Basic middleware
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	h := handlers.NewHandlers(ts, bs, ps, toks)
+	h := handlers.NewHandlers(ts, bs, ps, toks, authSvc, orgSvc)
 
-	// Public / infra
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		// In Phase 0 we are ready as long as we can start (DB ping already happened)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
 	})
 	r.Handle("/metrics", promhttp.Handler())
 
-	// Protected API
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Use(auth.AdminAuth)
+		// Public auth
+		r.Post("/auth/request-code", h.RequestCode)
+		r.Post("/auth/verify", h.VerifyCode)
 
-		// Tenants
-		r.Post("/tenants", h.CreateTenant)
-		r.Get("/tenants", h.ListTenants)
-		r.Get("/tenants/{tenantId}", h.GetTenant)
+		// Authenticated routes (user session or platform admin token)
+		r.Group(func(r chi.Router) {
+			r.Use(auth.Middleware(authSvc))
 
-		// Backends
-		r.Post("/tenants/{tenantId}/backend", h.SetBackend)
-		r.Post("/tenants/{tenantId}/backend/test", h.TestBackend)
+			r.Post("/auth/logout", h.Logout)
+			r.Get("/me", h.Me)
+			r.Patch("/me", h.UpdateMe)
+			r.Get("/me/organizations", h.ListMyOrganizations)
+			r.Post("/me/organizations", h.CreateMyOrganization)
+			r.Get("/me/invites", h.ListMyInvites)
+			r.Post("/me/invites/{inviteId}/accept", h.AcceptInvite)
 
-		// Policies
-		r.Get("/tenants/{tenantId}/policy", h.GetPolicy)
-		r.Put("/tenants/{tenantId}/policy/collections/{dbColl}", h.SetCollectionPolicy)
-		r.Put("/tenants/{tenantId}/policy/defaults", h.SetDefaultTTL)
+			// Tenants / organizations
+			r.Post("/tenants", h.CreateTenant)
+			r.Get("/tenants", h.ListTenants)
+			r.Get("/tenants/{tenantId}", h.GetTenant)
 
-		// Explicit cache invalidation (Phase 3)
-		r.Post("/tenants/{tenantId}/invalidate", h.Invalidate)
+			// Members & invites
+			r.Get("/tenants/{tenantId}/members", h.ListMembers)
+			r.Post("/tenants/{tenantId}/invites", h.InviteMember)
+			r.Get("/tenants/{tenantId}/invites", h.ListTenantInvites)
+			r.Delete("/tenants/{tenantId}/invites/{inviteId}", h.RevokeInvite)
+			r.Delete("/tenants/{tenantId}/members/{userId}", h.RemoveMember)
 
-		// Phase 4 savings / platform
-		r.Get("/tenants/{tenantId}/savings", h.SavingsReport)
+			// Backends
+			r.Post("/tenants/{tenantId}/backend", h.SetBackend)
+			r.Post("/tenants/{tenantId}/backend/test", h.TestBackend)
 
-		// Tokens
-		r.Post("/tenants/{tenantId}/tokens", h.IssueToken)
-		r.Get("/tenants/{tenantId}/tokens", h.ListTokens)
-		r.Delete("/tokens/{tokenId}", h.RevokeToken)
+			// Policies
+			r.Get("/tenants/{tenantId}/policy", h.GetPolicy)
+			r.Put("/tenants/{tenantId}/policy/collections/{dbColl}", h.SetCollectionPolicy)
+			r.Put("/tenants/{tenantId}/policy/defaults", h.SetDefaultTTL)
+
+			r.Post("/tenants/{tenantId}/invalidate", h.Invalidate)
+			r.Get("/tenants/{tenantId}/savings", h.SavingsReport)
+
+			// Tokens
+			r.Post("/tenants/{tenantId}/tokens", h.IssueToken)
+			r.Get("/tenants/{tenantId}/tokens", h.ListTokens)
+			r.Delete("/tokens/{tokenId}", h.RevokeToken)
+		})
 	})
 
 	return r
