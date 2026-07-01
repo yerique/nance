@@ -15,6 +15,7 @@ import (
 	"github.com/taeven/nance/accelerator/internal/proxy/auth"
 	"github.com/taeven/nance/accelerator/internal/proxy/cache"
 	"github.com/taeven/nance/accelerator/internal/proxy/cachedcursor"
+	"github.com/taeven/nance/accelerator/internal/proxy/cachestats"
 	proxyconfig "github.com/taeven/nance/accelerator/internal/proxy/config"
 	"github.com/taeven/nance/accelerator/internal/proxy/cursor"
 	"github.com/taeven/nance/accelerator/internal/proxy/handler"
@@ -42,15 +43,15 @@ type Server struct {
 
 	ln net.Listener
 
-	mu       sync.Mutex
-	conns    map[net.Conn]struct{}
-	tenantN  map[string]int // open connections per tenant
-	connSeq  atomic.Uint64
-	connID   atomic.Int32
-	reqID    atomic.Int32
+	mu      sync.Mutex
+	conns   map[net.Conn]struct{}
+	tenantN map[string]int // open connections per tenant
+	connSeq atomic.Uint64
+	connID  atomic.Int32
+	reqID   atomic.Int32
 
-	wg     sync.WaitGroup
-	closed atomic.Bool
+	wg       sync.WaitGroup
+	closed   atomic.Bool
 	draining atomic.Bool
 }
 
@@ -59,6 +60,7 @@ type Options struct {
 	Cache         *cache.Coordinator
 	Policies      *policy.Engine
 	CachedCursors *cachedcursor.Store
+	CacheStats    *cachestats.Tracker
 	Limiter       *ratelimit.Limiter
 }
 
@@ -88,6 +90,7 @@ func New(cfg *proxyconfig.Config, log *slog.Logger, validator *auth.Validator, p
 		Pool:          pools,
 		Cursors:       cursors,
 		CachedCursors: o.CachedCursors,
+		CacheStats:    o.CacheStats,
 		Cache:         o.Cache,
 		Policies:      o.Policies,
 		Limiter:       o.Limiter,

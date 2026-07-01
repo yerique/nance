@@ -33,6 +33,8 @@ Clients (drivers)                    Operators (dashboard / curl)
 
 Policy in the control plane sets **default TTL** and optional **per-collection overrides** (real names like `mydb.orders`). Caching is **not** gated on an “enabled” flag anymore; the `_cache` suffix is the opt-in.
 
+Cached results are dropped only when **TTL expires** or via **manual invalidation** (`POST /tenants/{id}/invalidate` or the dashboard). **Writes do not invalidate** the collection cache.
+
 ### Roles (organizations)
 
 | Role | Dashboard / API |
@@ -126,12 +128,14 @@ mongodb://demo:<rawToken>@127.0.0.1:27018/mydb?authMechanism=PLAIN&authSource=$e
 | `NANCE_MASTER_KEY` | (required) | Decrypt backend URIs |
 | `DATABASE_URL` | same as CP | Token + backend + policy lookup |
 | `NANCE_PROXY_LISTEN` | `:27018` | Mongo wire TCP listen |
-| `NANCE_PROXY_HEALTH_LISTEN` | `:9090` | `/healthz`, `/readyz`, `/metrics` |
+| `NANCE_PROXY_HEALTH_LISTEN` | `:9090` | `/healthz`, `/readyz`, `/metrics`, `/cache-stats` (per-collection hit/miss ratios, process-local) |
 | `NANCE_REDIS_ADDR` | | Redis for read-through cache |
 | `NANCE_CACHE_ENABLED` | | Enable cache path when Redis is configured |
 | `NANCE_POLICY_REFRESH_INTERVAL` | `30s` | Reload cache policies from Postgres |
 | `NANCE_PROXY_MAX_CONNS_PER_TENANT` | `200` | Soft limit client TCP conns per tenant |
 | `NANCE_PROXY_BACKEND_MAX_POOL` | `50` | Driver pool toward real Mongo |
+| `NANCE_PROXY_BACKEND_IDLE_TIMEOUT` | `15m` | Evict unused per-tenant `mongo.Client` after this idle period (`0` disables) |
+| `NANCE_PROXY_BACKEND_IDLE_EVICT_INTERVAL` | `1m` | How often the idle reaper runs |
 | `NANCE_PROXY_CURSOR_IDLE_TIMEOUT` | `10m` | Prune idle cursor state |
 | `NANCE_PROXY_ALLOW_UNAUTH` | `false` | Dev only |
 

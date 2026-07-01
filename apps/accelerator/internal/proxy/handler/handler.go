@@ -12,6 +12,7 @@ import (
 	"github.com/taeven/nance/accelerator/internal/proxy/auth"
 	"github.com/taeven/nance/accelerator/internal/proxy/cache"
 	"github.com/taeven/nance/accelerator/internal/proxy/cachedcursor"
+	"github.com/taeven/nance/accelerator/internal/proxy/cachestats"
 	"github.com/taeven/nance/accelerator/internal/proxy/command"
 	"github.com/taeven/nance/accelerator/internal/proxy/cursor"
 	"github.com/taeven/nance/accelerator/internal/proxy/policy"
@@ -43,6 +44,7 @@ type Deps struct {
 	Cursors       *cursor.Registry
 	CachedCursors *cachedcursor.Store
 	Cache         *cache.Coordinator
+	CacheStats    *cachestats.Tracker // per-collection hit/miss (in-process, lock-free)
 	Policies      *policy.Engine
 	Limiter       *ratelimit.Limiter
 	Log           *slog.Logger
@@ -280,6 +282,7 @@ func (h *Handler) handlePassthrough(ctx context.Context, cs *ConnState, msg *wir
 		telemetry.ProxyBackendErrors.WithLabelValues(tenantID).Inc()
 		return command.ErrorReply(6, "HostUnreachable", "failed to reach tenant backend: "+err.Error()), nil
 	}
+	defer h.deps.Pool.Release(tenantID)
 
 	// Cursor-producing reads: use collection helpers so we can manage getMore
 	var reply any
@@ -311,10 +314,7 @@ func (h *Handler) handlePassthrough(ctx context.Context, cs *ConnState, msg *wir
 		return reply, err
 	}
 
-	// Writes always target the real collection; invalidate that namespace's cache entries.
-	if info.Kind == command.KindWrite && collName != "" {
-		h.maybeInvalidate(ctx, tenantID, dbName, collName, nsLabel)
-	}
+	// Cache lifetime is TTL + explicit invalidation only (no automatic bust on writes).
 
 	// Populate cache only for opt-in (_cache suffix) reads that missed the coordinator path
 	if useCache && info.Kind == command.KindRead && collName != "" {
@@ -364,6 +364,7 @@ func (h *Handler) tryCacheRead(
 		if err != nil {
 			return nil, err
 		}
+		defer h.deps.Pool.Release(tenantID)
 		var backendReply any
 		switch cmdLower {
 		case "find":
@@ -408,6 +409,9 @@ func (h *Handler) tryCacheRead(
 		h.deps.Cache.BestEffortSet(ctx, tenantID, dbName, collName, key, serialized, dec.TTL)
 		telemetry.CacheResultBytes.WithLabelValues(tenantID).Observe(float64(len(serialized)))
 		telemetry.CacheMisses.WithLabelValues(tenantID, nsLabel, cmdLower).Inc()
+		if h.deps.CacheStats != nil {
+			h.deps.CacheStats.RecordMiss(tenantID, dbName, collName)
+		}
 		return serialized, nil
 	})
 
@@ -429,8 +433,12 @@ func (h *Handler) tryCacheRead(
 	}
 	if hit {
 		telemetry.CacheHits.WithLabelValues(tenantID, nsLabel, cmdLower).Inc()
+		if h.deps.CacheStats != nil {
+			h.deps.CacheStats.RecordHit(tenantID, dbName, collName)
+		}
 		telemetry.CacheLatency.WithLabelValues("hit").Observe(time.Since(start).Seconds())
 	} else {
+		// Miss was already counted when populate ran; ensure miss counted if load returned without that path
 		telemetry.CacheLatency.WithLabelValues("miss").Observe(time.Since(start).Seconds())
 	}
 	if cmdLower == "count" || cmdLower == "estimateddocumentcount" || cmdLower == "distinct" {
@@ -543,19 +551,6 @@ func isErrorReply(reply any) bool {
 		}
 	}
 	return false
-}
-
-func (h *Handler) maybeInvalidate(ctx context.Context, tenantID, dbName, collName, nsLabel string) {
-	if h.deps.Cache == nil || collName == "" {
-		return
-	}
-	go func() {
-		invCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := h.deps.Cache.BestEffortInvalidate(invCtx, tenantID, dbName, collName); err == nil {
-			telemetry.CacheInvalidations.WithLabelValues(tenantID, nsLabel, "write").Inc()
-		}
-	}()
 }
 
 // maybePopulateCache is used when the normal passthrough path ran (cache miss path outside coordinator).

@@ -516,7 +516,7 @@ async function confirmDeleteOrg() {
         <ul class="help-list">
           <li><code class="mono">db.orders_cache.find(…)</code> — cached (real collection: <code class="mono">orders</code>)</li>
           <li><code class="mono">db.orders.find(…)</code> — always bypasses cache</li>
-          <li>Writes to <code class="mono">orders</code> invalidate cached entries for that namespace</li>
+          <li>Entries expire by <strong>TTL</strong> (default 60s); use <strong>Invalidate</strong> for a manual flush — writes do not clear cache automatically</li>
         </ul>
         <div class="form-actions">
           <button class="btn btn-secondary" type="button" @click="tab = 'backend'">{{ canManage ? 'Configure backend' : 'View connection' }}</button>
@@ -905,7 +905,7 @@ async function confirmDeleteOrg() {
         <p class="card-desc">
           Flush Redis entries for this organization. Use the <strong>real</strong> collection name
           (e.g. <code class="mono">orders</code>), matching what was stored from <code class="mono">orders_cache</code> reads.
-          Writes through the proxy already invalidate that namespace automatically.
+          The proxy does <strong>not</strong> invalidate on write — only TTL expiry and this explicit action (or the API) clear cached results.
         </p>
         <div class="grid-2">
           <div class="form-row">

@@ -7,12 +7,14 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/taeven/nance/accelerator/internal/proxy/cachestats"
 )
 
-// Server is a small HTTP sidecar for /healthz, /readyz, /metrics.
+// Server is a small HTTP sidecar for /healthz, /readyz, /metrics, /cache-stats.
 type Server struct {
-	Addr    string
-	ReadyFn func(ctx context.Context) error
+	Addr       string
+	ReadyFn    func(ctx context.Context) error
+	CacheStats *cachestats.Tracker // optional; process-local hit/miss per collection
 }
 
 func (s *Server) Handler() http.Handler {
@@ -35,6 +37,22 @@ func (s *Server) Handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
 	})
 	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/cache-stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if s.CacheStats == nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"collections": []any{}, "note": "cache stats not enabled"})
+			return
+		}
+		tenant := r.URL.Query().Get("tenant")
+		if tenant != "" {
+			_ = json.NewEncoder(w).Encode(s.CacheStats.SnapshotTenant(tenant))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"collections": s.CacheStats.SnapshotAll(),
+			"note":        "per-proxy-process counters; aggregate across pods in Prometheus/Grafana if needed",
+		})
+	})
 	return mux
 }
 

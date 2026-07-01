@@ -23,27 +23,31 @@ type Config struct {
 	BackendMinPoolSize uint64
 	// BackendConnectTimeout is used when establishing backend mongo.Client.
 	BackendConnectTimeout time.Duration
+	// BackendIdleTimeout closes per-tenant mongo.Client when unused this long (0 = disable eviction).
+	BackendIdleTimeout time.Duration
+	// BackendIdleEvictInterval is how often the idle reaper runs (default 1m).
+	BackendIdleEvictInterval time.Duration
 	// CursorIdleTimeout prunes server-side cursor state not touched within this window.
 	CursorIdleTimeout time.Duration
 	// AllowUnauthenticated permits commands without prior auth (dev only; hello still works).
 	AllowUnauthenticated bool
 
 	// Redis / cache (Phase 2)
-	RedisAddr            string
-	RedisPassword        string
-	RedisDB              int
-	CacheEnabled         bool // master switch; still requires per-collection policy
+	RedisAddr             string
+	RedisPassword         string
+	RedisDB               int
+	CacheEnabled          bool // master switch; still requires per-collection policy
 	PolicyRefreshInterval time.Duration
 
 	// Phase 3
-	TenantQPS           int
-	TenantBurst         int
+	TenantQPS            int
+	TenantBurst          int
 	CachedCursorMaxBytes int64
-	DrainTimeout        time.Duration
+	DrainTimeout         time.Duration
 
 	// Phase 4 multi-region
-	Region              string
-	KnownRegions        string // comma-separated
+	Region       string
+	KnownRegions string // comma-separated
 }
 
 func Load() *Config {
@@ -59,6 +63,9 @@ func Load() *Config {
 	maxPool := uint64(getenvInt("NANCE_PROXY_BACKEND_MAX_POOL", 50))
 	minPool := uint64(getenvInt("NANCE_PROXY_BACKEND_MIN_POOL", 0))
 	connTimeout := getenvDuration("NANCE_PROXY_BACKEND_CONNECT_TIMEOUT", 10*time.Second)
+	// Idle eviction: default 15m; set NANCE_PROXY_BACKEND_IDLE_TIMEOUT=0 to disable.
+	idleTimeout := getenvDurationAllowZero("NANCE_PROXY_BACKEND_IDLE_TIMEOUT", 15*time.Minute)
+	idleEvictEvery := getenvDuration("NANCE_PROXY_BACKEND_IDLE_EVICT_INTERVAL", time.Minute)
 	cursorIdle := getenvDuration("NANCE_PROXY_CURSOR_IDLE_TIMEOUT", 10*time.Minute)
 	allowUnauth := getenvBool("NANCE_PROXY_ALLOW_UNAUTH", false)
 	redisAddr := getenv("NANCE_REDIS_ADDR", "localhost:6379")
@@ -70,27 +77,29 @@ func Load() *Config {
 	drainTO := getenvDuration("NANCE_PROXY_DRAIN_TIMEOUT", 30*time.Second)
 
 	return &Config{
-		ListenAddr:            listen,
-		HealthAddr:            health,
-		DatabaseURL:           dbURL,
-		MasterKey:             os.Getenv("NANCE_MASTER_KEY"),
-		MaxConnsPerTenant:     maxConns,
-		BackendMaxPoolSize:    maxPool,
-		BackendMinPoolSize:    minPool,
-		BackendConnectTimeout: connTimeout,
-		CursorIdleTimeout:     cursorIdle,
-		AllowUnauthenticated:  allowUnauth,
-		RedisAddr:             redisAddr,
-		RedisPassword:         os.Getenv("NANCE_REDIS_PASSWORD"),
-		RedisDB:               getenvInt("NANCE_REDIS_DB", 0),
-		CacheEnabled:          cacheOn,
-		PolicyRefreshInterval: policyRefresh,
-		TenantQPS:             tenantQPS,
-		TenantBurst:           tenantBurst,
-		CachedCursorMaxBytes:  cachedCursorMax,
-		DrainTimeout:          drainTO,
-		Region:                getenv("NANCE_REGION", "default"),
-		KnownRegions:          os.Getenv("NANCE_KNOWN_REGIONS"),
+		ListenAddr:               listen,
+		HealthAddr:               health,
+		DatabaseURL:              dbURL,
+		MasterKey:                os.Getenv("NANCE_MASTER_KEY"),
+		MaxConnsPerTenant:        maxConns,
+		BackendMaxPoolSize:       maxPool,
+		BackendMinPoolSize:       minPool,
+		BackendConnectTimeout:    connTimeout,
+		BackendIdleTimeout:       idleTimeout,
+		BackendIdleEvictInterval: idleEvictEvery,
+		CursorIdleTimeout:        cursorIdle,
+		AllowUnauthenticated:     allowUnauth,
+		RedisAddr:                redisAddr,
+		RedisPassword:            os.Getenv("NANCE_REDIS_PASSWORD"),
+		RedisDB:                  getenvInt("NANCE_REDIS_DB", 0),
+		CacheEnabled:             cacheOn,
+		PolicyRefreshInterval:    policyRefresh,
+		TenantQPS:                tenantQPS,
+		TenantBurst:              tenantBurst,
+		CachedCursorMaxBytes:     cachedCursorMax,
+		DrainTimeout:             drainTO,
+		Region:                   getenv("NANCE_REGION", "default"),
+		KnownRegions:             os.Getenv("NANCE_KNOWN_REGIONS"),
 	}
 }
 
@@ -129,6 +138,22 @@ func getenvDuration(k string, def time.Duration) time.Duration {
 	v := os.Getenv(k)
 	if v == "" {
 		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
+}
+
+// getenvDurationAllowZero treats missing env as def, but explicit "0" as zero (disable feature).
+func getenvDurationAllowZero(k string, def time.Duration) time.Duration {
+	v := os.Getenv(k)
+	if v == "" {
+		return def
+	}
+	if v == "0" {
+		return 0
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {

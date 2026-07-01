@@ -24,7 +24,7 @@ Operators and team members sign in with **email + one-time code**, manage **orga
 - Clients opt in **per query** with a `_cache` suffix: `db.orders_cache.find(...)` → real `orders` + Redis (default **60s**).
 - `db.orders.find(...)` always hits MongoDB.
 - This UI does **not** toggle caching on/off per collection. It sets **default TTL** and optional **overrides** using the **real** collection name (`mydb.orders`, not `mydb.orders_cache`).
-- Writes to the real collection invalidate that namespace (via proxy).
+- Entries expire by **TTL**; use **Invalidate** in the UI (or the control-plane API) for an explicit flush. Writes do **not** clear the cache automatically.
 
 ### Invite-only instances
 

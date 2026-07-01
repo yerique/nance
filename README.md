@@ -56,7 +56,7 @@ An **organization** is a tenant with its own encrypted MongoDB backend URI, cach
 - The proxy strips that suffix, talks to the real collection (`orders`), and may serve/store results in Redis.
 - Default TTL is **60 seconds** for all such queries; override per org or per real collection in the control plane / UI.
 - Queries **without** `_cache` always hit MongoDB (no cache).
-- Writes to the real collection invalidate that namespace’s cache entries.
+- Cache entries expire by **TTL** only unless you **manually invalidate** (dashboard / `POST …/invalidate`). Writes do **not** auto-bust the cache.
 
 ### Invite-only mode (self-hosters)
 

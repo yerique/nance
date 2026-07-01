@@ -14,6 +14,7 @@ import (
 	"github.com/taeven/nance/accelerator/internal/proxy/auth"
 	"github.com/taeven/nance/accelerator/internal/proxy/cache"
 	"github.com/taeven/nance/accelerator/internal/proxy/cachedcursor"
+	"github.com/taeven/nance/accelerator/internal/proxy/cachestats"
 	proxyconfig "github.com/taeven/nance/accelerator/internal/proxy/config"
 	"github.com/taeven/nance/accelerator/internal/proxy/cursor"
 	"github.com/taeven/nance/accelerator/internal/proxy/health"
@@ -76,19 +77,23 @@ func main() {
 
 	validator := auth.NewValidator(pgStore)
 	pools := pool.NewManager(pgStore, cryptoCfg, cfg, logger)
+	pools.StartIdleEviction(ctx)
 	cursors := cursor.NewRegistry(cfg.CursorIdleTimeout)
 	cachedCursors := cachedcursor.NewStore(cfg.CursorIdleTimeout, cfg.CachedCursorMaxBytes)
 	limiter := ratelimit.New(cfg.TenantQPS, cfg.TenantBurst)
+	cacheStats := cachestats.NewTracker()
 	proxySrv := server.New(cfg, logger, validator, pools, cursors, server.Options{
 		Cache:         cacheCoord,
 		Policies:      polEngine,
+		CacheStats:    cacheStats,
 		CachedCursors: cachedCursors,
 		Limiter:       limiter,
 	})
 
 	// HTTP health/metrics sidecar
 	hs := &health.Server{
-		Addr: cfg.HealthAddr,
+		Addr:       cfg.HealthAddr,
+		CacheStats: cacheStats,
 		ReadyFn: func(c context.Context) error {
 			// Ready if we can ping postgres (Redis optional — fail-open)
 			_, err := pgStore.ListTenants(c)
