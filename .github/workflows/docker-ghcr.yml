@@ -10,6 +10,10 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  # Deploy manifests live in the GitOps repo (PR opened after image push).
+  DEPLOY_REPO: taeven/nance-deploy
+  DEPLOY_BRANCH: main
+  DEPLOY_OVERLAY: deployments/nance/overlays/dev
 
 permissions:
   contents: read
@@ -30,6 +34,10 @@ jobs:
             dockerfile: apps/accelerator/Dockerfile.proxy
             context: apps/accelerator
             image_suffix: nance/accelerator-proxy
+          - name: dashboard
+            dockerfile: apps/admin-dashboard/Dockerfile
+            context: apps/admin-dashboard
+            image_suffix: nance/admin-dashboard
 
     steps:
       - name: Checkout
@@ -69,7 +77,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
-          # x86-64 only (native on GitHub-hosted ubuntu runners)
           platforms: linux/amd64
 
       - name: Image summary
@@ -79,3 +86,86 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # Open a PR in nance-deploy so merge applies the new images to the cluster.
+  open-deploy-pr:
+    name: Open deploy PR (nance-deploy)
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Resolve image tags
+        id: images
+        shell: bash
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          REG="${{ env.REGISTRY }}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "controlplane=${REG}/${OWNER}/nance/accelerator-controlplane" >> "$GITHUB_OUTPUT"
+          echo "proxy=${REG}/${OWNER}/nance/accelerator-proxy" >> "$GITHUB_OUTPUT"
+          echo "dashboard=${REG}/${OWNER}/nance/admin-dashboard" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout deploy repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DEPLOY_REPO }}
+          # PAT with contents:write + pull_requests:write on nance-deploy
+          token: ${{ secrets.DEPLOY_REPO_TOKEN }}
+          ref: ${{ env.DEPLOY_BRANCH }}
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Bump image tags in Kustomize overlay
+        env:
+          CP_IMAGE: ${{ steps.images.outputs.controlplane }}
+          PROXY_IMAGE: ${{ steps.images.outputs.proxy }}
+          DASH_IMAGE: ${{ steps.images.outputs.dashboard }}
+          TAG: ${{ steps.images.outputs.tag }}
+          OVERLAY: ${{ env.DEPLOY_OVERLAY }}
+        run: |
+          set -euo pipefail
+          KUSTOMIZATION="${OVERLAY}/kustomization.yaml"
+          test -f "$KUSTOMIZATION"
+
+          yq -i "(.images[] | select(.name == \"controlplane\") | .newName) = \"${CP_IMAGE}\"" "$KUSTOMIZATION"
+          yq -i "(.images[] | select(.name == \"controlplane\") | .newTag) = \"${TAG}\"" "$KUSTOMIZATION"
+          yq -i "(.images[] | select(.name == \"proxy\") | .newName) = \"${PROXY_IMAGE}\"" "$KUSTOMIZATION"
+          yq -i "(.images[] | select(.name == \"proxy\") | .newTag) = \"${TAG}\"" "$KUSTOMIZATION"
+          yq -i "(.images[] | select(.name == \"dashboard\") | .newName) = \"${DASH_IMAGE}\"" "$KUSTOMIZATION"
+          yq -i "(.images[] | select(.name == \"dashboard\") | .newTag) = \"${TAG}\"" "$KUSTOMIZATION"
+
+          echo "Updated ${KUSTOMIZATION}:"
+          cat "$KUSTOMIZATION"
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.DEPLOY_REPO_TOKEN }}
+          commit-message: "deploy: bump nance images to ${{ steps.images.outputs.tag }}"
+          branch: deploy/nance-${{ steps.images.outputs.tag }}
+          delete-branch: true
+          title: "deploy: nance images ${{ steps.images.outputs.tag }}"
+          body: |
+            ## Automated deploy PR
+
+            Opened by [`${{ github.repository }}`](https://github.com/${{ github.repository }}) on commit `${{ github.sha }}`.
+
+            | Component | Image |
+            |-----------|--------|
+            | controlplane | `${{ steps.images.outputs.controlplane }}:${{ steps.images.outputs.tag }}` |
+            | proxy | `${{ steps.images.outputs.proxy }}:${{ steps.images.outputs.tag }}` |
+            | dashboard | `${{ steps.images.outputs.dashboard }}:${{ steps.images.outputs.tag }}` |
+
+            Source: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+
+            After merge, the **deploy** workflow in **nance-deploy** applies `deployments/nance/overlays/dev` to the Kubernetes cluster.
+          labels: |
+            deploy
+            automated

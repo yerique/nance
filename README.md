@@ -155,6 +155,15 @@ Details: [`apps/mongo-loadtest/README.md`](apps/mongo-loadtest/README.md).
 - Accelerator: `make test`, `make build-all`, `make lint` (see app README)  
 - Migrations live in `apps/accelerator/migrations/` and run on control plane start  
 
+## Continuous delivery
+
+On every push to `main`, GitHub Actions:
+
+1. Builds and pushes **controlplane**, **proxy**, and **dashboard** images to GHCR (`ghcr.io/taeven/nance/...`, tags include `sha-<short>`).
+2. Opens a **pull request** in [`taeven/nance-deploy`](https://github.com/taeven/nance-deploy) that bumps Kustomize image tags under `deployments/nance/overlays/dev`.
+
+Merging that PR applies the manifests to the Kubernetes cluster (VKE). Configure secret `DEPLOY_REPO_TOKEN` on this repo (PAT with write access to `nance-deploy`). Cluster credentials live only in `nance-deploy` as `KUBE_CONFIG_DATA`.
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE). Copyright (c) 2026 taeven.
