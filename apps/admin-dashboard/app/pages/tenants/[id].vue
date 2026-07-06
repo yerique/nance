@@ -87,9 +87,9 @@ const api = useAcceleratorApi()
 const tenantId = computed(() => String(route.params.id || ''))
 
 /** Top-level: product work vs organization administration */
-const area = ref<'connections' | 'caching' | 'members' | 'org'>('connections')
+const area = ref<'connections' | 'members' | 'org'>('connections')
 /** Sub-panel when a connection is selected */
-const connPanel = ref<'source' | 'access' | 'cache-write'>('access')
+const connPanel = ref<'access' | 'caching' | 'source' | 'cache-write'>('access')
 const showAddConnection = ref(false)
 
 const myRole = computed(() => tenant.value?.role || 'member')
@@ -178,12 +178,16 @@ async function loadTenant() {
 }
 
 async function loadPolicy() {
+  if (!selectedConnectionId.value) {
+    policy.value = null
+    return
+  }
   try {
-    policy.value = await api.getPolicy(tenantId.value)
+    policy.value = await api.getPolicy(tenantId.value, selectedConnectionId.value)
     defaultTtl.value = policy.value.defaultTtlSeconds ?? 60
   }
   catch (e) {
-    toast.error(`Policy: ${api.apiErrorMessage(e)}`)
+    toast.error(`Caching: ${api.apiErrorMessage(e)}`)
   }
 }
 
@@ -203,8 +207,11 @@ async function loadConnections() {
       selectedConnectionId.value = connections.value[0].id
     }
     if (selectedConnectionId.value) {
-      await loadTokens()
+      await Promise.all([loadTokens(), loadPolicy()])
       syncConnQuery()
+    }
+    else {
+      policy.value = null
     }
   }
   catch (e) {
@@ -244,7 +251,7 @@ async function selectConnection(id: string) {
   tokenDesc.value = ''
   showAddConnection.value = false
   syncConnQuery()
-  await loadTokens()
+  await Promise.all([loadTokens(), loadPolicy()])
 }
 
 function onToggleAddConnection() {
@@ -316,7 +323,6 @@ async function onRevokeInvite(inviteId: string) {
 }
 
 watch(area, async (t) => {
-  if (t === 'caching' && !policy.value) await loadPolicy()
   if (t === 'connections') await loadConnections()
   if (t === 'members') await loadMembers()
 })
@@ -324,7 +330,7 @@ watch(area, async (t) => {
 onMounted(async () => {
   await loadTenant()
   if (tenant.value) {
-    await Promise.all([loadPolicy(), loadConnections()])
+    await loadConnections()
   }
 })
 
@@ -451,9 +457,10 @@ async function saveDefaults() {
       toast.error('Default TTL must be at least 1 second')
       return
     }
-    await api.setDefaultTtl(tenantId.value, ttl)
+    if (!selectedConnectionId.value) return
+    await api.setDefaultTtl(tenantId.value, selectedConnectionId.value, ttl)
     await loadPolicy()
-    toast.success(`Default cache TTL set to ${ttl}s`)
+    toast.success(`Default cache TTL set to ${ttl}s for this connection`)
   }
   catch (e) {
     toast.error(api.apiErrorMessage(e))
@@ -464,9 +471,10 @@ async function saveDefaults() {
 }
 
 async function upsertCollection(key: string, pol: CollectionPolicy) {
+  if (!selectedConnectionId.value) return
   collBusy.value = true
   try {
-    await api.setCollectionPolicy(tenantId.value, key, pol)
+    await api.setCollectionPolicy(tenantId.value, selectedConnectionId.value, key, pol)
     await loadPolicy()
     toast.success(`Override saved for ${key}`)
   }
@@ -499,9 +507,10 @@ async function addCollection() {
 }
 
 async function removeCollectionOverride(key: string) {
+  if (!selectedConnectionId.value) return
   collBusy.value = true
   try {
-    await api.setCollectionPolicy(tenantId.value, key, { enabled: true, ttlSeconds: 0 })
+    await api.setCollectionPolicy(tenantId.value, selectedConnectionId.value, key, { enabled: true, ttlSeconds: 0 })
     await loadPolicy()
     toast.message(`${key} will inherit the default TTL (${defaultTtl.value}s)`)
   }
@@ -582,18 +591,19 @@ async function runInvalidate() {
     toast.error('Only admins and owners can invalidate cache')
     return
   }
+  if (!selectedConnectionId.value) return
   invBusy.value = true
   try {
     const tags = invTags.value
       .split(',')
       .map(t => t.trim())
       .filter(Boolean)
-    const res = await api.invalidate(tenantId.value, {
+    const res = await api.invalidate(tenantId.value, selectedConnectionId.value, {
       db: invDb.value.trim() || undefined,
       coll: invColl.value.trim() || undefined,
       tags: tags.length ? tags : undefined,
     })
-    toast.success(`Invalidated (tenant=${res.tenantId}${res.db ? `, db=${res.db}` : ''}${res.coll ? `, coll=${res.coll}` : ''})`)
+    toast.success(`Invalidated${res.db ? ` db=${res.db}` : ''}${res.coll ? ` coll=${res.coll}` : ''}`)
   }
   catch (e) {
     toast.error(api.apiErrorMessage(e))
@@ -702,10 +712,6 @@ async function confirmDeleteOrg() {
           <TabsTrigger value="connections" class="gap-1.5">
             <CableIcon class="size-3.5 opacity-80" />
             Connections
-          </TabsTrigger>
-          <TabsTrigger value="caching" class="gap-1.5">
-            <DatabaseIcon class="size-3.5 opacity-80" />
-            Caching
           </TabsTrigger>
           <TabsTrigger value="members" class="gap-1.5">
             <UsersIcon class="size-3.5 opacity-80" />
@@ -898,6 +904,7 @@ async function confirmDeleteOrg() {
                 <Tabs v-model="connPanel" class="w-full flex-col gap-4">
                   <TabsList class="h-auto w-full flex-wrap justify-start gap-1 bg-muted/40 p-1">
                     <TabsTrigger value="access">Proxy access</TabsTrigger>
+                    <TabsTrigger value="caching">Caching</TabsTrigger>
                     <TabsTrigger value="source">Source database</TabsTrigger>
                     <TabsTrigger value="cache-write">Cache on write</TabsTrigger>
                   </TabsList>
@@ -1008,6 +1015,203 @@ async function confirmDeleteOrg() {
                           </TableRow>
                         </TableBody>
                       </Table>
+                    </Card>
+                  </TabsContent>
+
+
+                  <!-- Caching (this connection) -->
+                  <TabsContent value="caching" class="mt-0 flex flex-col gap-4">
+                    <Alert>
+                      <DatabaseIcon />
+                      <AlertTitle>Caching for {{ selectedConnection.name }}</AlertTitle>
+                      <AlertDescription>
+                        TTL and overrides apply only to this connection’s proxy traffic.
+                        Clients opt in with a <code class="font-mono text-xs">_cache</code> collection suffix.
+                      </AlertDescription>
+                    </Alert>
+
+                    <Card class="border-primary/25 bg-primary/5">
+                      <CardHeader>
+                        <CardTitle class="text-base">
+                          Opt-in with <code class="font-mono text-sm">_cache</code>
+                        </CardTitle>
+                        <CardDescription>
+                          <code class="font-mono text-xs">db.orders_cache.find(…)</code> uses this connection’s TTL;
+                          <code class="font-mono text-xs">db.orders.find(…)</code> always hits MongoDB.
+                        </CardDescription>
+                      </CardHeader>
+                    </Card>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle class="text-base">Default TTL</CardTitle>
+                        <CardDescription>
+                          Applied to all <code class="font-mono text-xs">*_cache</code> queries on this connection
+                          unless a per-collection override is set.
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent class="flex flex-col gap-4">
+                        <div class="grid gap-3 sm:grid-cols-[minmax(0,16rem)_auto] sm:items-end">
+                          <Field class="gap-1.5">
+                            <FieldLabel for="default-ttl">Default TTL (seconds)</FieldLabel>
+                            <Input
+                              id="default-ttl"
+                              v-model.number="defaultTtl"
+                              type="number"
+                              min="1"
+                              step="1"
+                              :disabled="isReadOnly || defaultsBusy"
+                            />
+                          </Field>
+                          <Button
+                            v-if="canManage"
+                            class="w-full sm:w-auto"
+                            :disabled="defaultsBusy || isReadOnly"
+                            @click="saveDefaults"
+                          >
+                            <Spinner v-if="defaultsBusy" data-icon="inline-start" />
+                            {{ defaultsBusy ? 'Saving…' : 'Save default TTL' }}
+                          </Button>
+                        </div>
+                        <p v-if="policy" class="text-xs text-muted-foreground">
+                          Active default: <strong class="text-foreground">{{ policy.defaultTtlSeconds }}s</strong>
+                          · key version {{ policy.cacheKeyVersion }}
+                          · updated {{ formatDate(policy.updatedAt) }}
+                        </p>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle class="text-base">Per-collection overrides</CardTitle>
+                        <CardDescription>
+                          Real collection names only (<code class="font-mono text-xs">db.orders</code>, not
+                          <code class="font-mono text-xs">db.orders_cache</code>). Scoped to this connection.
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent class="flex flex-col gap-4">
+                        <Empty v-if="!collectionEntries.length" class="border border-dashed py-8">
+                          <EmptyHeader>
+                            <EmptyTitle>No overrides</EmptyTitle>
+                            <EmptyDescription>
+                              All <code class="font-mono text-xs">*_cache</code> queries use the default TTL above.
+                            </EmptyDescription>
+                          </EmptyHeader>
+                        </Empty>
+
+                        <div v-else class="overflow-hidden rounded-lg border">
+                          <Table>
+                            <TableHeader>
+                              <TableRow class="hover:bg-transparent">
+                                <TableHead>Real collection</TableHead>
+                                <TableHead>Client uses</TableHead>
+                                <TableHead>TTL (s)</TableHead>
+                                <TableHead>Max result bytes</TableHead>
+                                <TableHead class="w-32" />
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              <TableRow v-for="row in collectionEntries" :key="row.key">
+                                <TableCell class="font-mono text-xs">{{ row.key }}</TableCell>
+                                <TableCell class="font-mono text-xs text-muted-foreground">{{ row.key }}_cache</TableCell>
+                                <TableCell>
+                                  <strong>{{ effectiveTtl(row) }}</strong>
+                                  <span v-if="!row.ttlSeconds || row.ttlSeconds <= 0" class="text-xs text-muted-foreground"> (default)</span>
+                                </TableCell>
+                                <TableCell class="text-muted-foreground">
+                                  {{ row.maxResultBytes ?? 'default (1 MiB)' }}
+                                </TableCell>
+                                <TableCell>
+                                  <Button
+                                    v-if="canManage"
+                                    variant="ghost"
+                                    size="sm"
+                                    :disabled="collBusy"
+                                    @click="removeCollectionOverride(row.key)"
+                                  >
+                                    Use default
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            </TableBody>
+                          </Table>
+                        </div>
+
+                        <template v-if="canManage">
+                          <div class="flex flex-col gap-3 border-t border-border/60 pt-4">
+                            <p class="wire-label">Add / update override</p>
+                            <div
+                              class="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,7rem)_minmax(0,9rem)_auto] lg:items-end"
+                            >
+                              <Field class="gap-1.5 sm:col-span-2 lg:col-span-1">
+                                <FieldLabel for="new-coll-key">Real db.collection</FieldLabel>
+                                <Input
+                                  id="new-coll-key"
+                                  v-model="newCollKey"
+                                  class="font-mono"
+                                  placeholder="mydb.orders"
+                                  :disabled="collBusy"
+                                />
+                              </Field>
+                              <Field class="gap-1.5">
+                                <FieldLabel for="new-coll-ttl">TTL (s)</FieldLabel>
+                                <Input
+                                  id="new-coll-ttl"
+                                  v-model.number="newCollTtl"
+                                  type="number"
+                                  min="1"
+                                  :placeholder="String(defaultTtl)"
+                                  :disabled="collBusy"
+                                />
+                              </Field>
+                              <Field class="gap-1.5">
+                                <FieldLabel for="new-coll-max">Max bytes</FieldLabel>
+                                <Input
+                                  id="new-coll-max"
+                                  v-model.number="newCollMaxBytes"
+                                  type="number"
+                                  min="1"
+                                  placeholder="1048576"
+                                  :disabled="collBusy"
+                                />
+                              </Field>
+                              <Button class="w-full lg:w-auto" :disabled="collBusy" @click="addCollection">
+                                <Spinner v-if="collBusy" data-icon="inline-start" />
+                                Save override
+                              </Button>
+                            </div>
+                          </div>
+                        </template>
+                      </CardContent>
+                    </Card>
+
+                    <Card v-if="canManage">
+                      <CardHeader>
+                        <CardTitle class="text-base">Manual invalidate</CardTitle>
+                        <CardDescription>
+                          Flush cache for a collection or tags on <strong>{{ selectedConnection.name }}</strong> only.
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent class="grid gap-3 sm:grid-cols-3">
+                        <Field class="gap-1.5">
+                          <FieldLabel>Database</FieldLabel>
+                          <Input v-model="invDb" class="font-mono" placeholder="mydb" :disabled="invBusy" />
+                        </Field>
+                        <Field class="gap-1.5">
+                          <FieldLabel>Collection</FieldLabel>
+                          <Input v-model="invColl" class="font-mono" placeholder="orders" :disabled="invBusy" />
+                        </Field>
+                        <Field class="gap-1.5">
+                          <FieldLabel>Tags (comma-separated)</FieldLabel>
+                          <Input v-model="invTags" placeholder="optional" :disabled="invBusy" />
+                        </Field>
+                      </CardContent>
+                      <CardFooter class="border-t border-border/60 pt-4">
+                        <Button :disabled="invBusy" @click="runInvalidate">
+                          <Spinner v-if="invBusy" data-icon="inline-start" />
+                          Invalidate
+                        </Button>
+                      </CardFooter>
                     </Card>
                   </TabsContent>
 
@@ -1129,7 +1333,7 @@ async function confirmDeleteOrg() {
                               then the next write clears it again — continuous thrash and little cache benefit.
                             </p>
                             <p>
-                              Prefer the default (TTL + manual invalidate under Organization) for high write rates.
+                              Prefer the default (TTL + manual invalidate under Caching) for high write rates.
                               Enable when freshness after writes matters more than write amplification.
                             </p>
                           </AlertDescription>
@@ -1141,201 +1345,6 @@ async function confirmDeleteOrg() {
               </template>
             </div>
           </div>
-        </TabsContent>
-
-        <!-- ========== CACHING (org-wide) ========== -->
-        <TabsContent value="caching" class="mt-0 flex flex-col gap-4">
-          <Alert>
-            <DatabaseIcon />
-            <AlertTitle>Organization-wide cache policy</AlertTitle>
-            <AlertDescription>
-              TTL defaults and overrides apply to every connection in this organization.
-              Clients opt in per query with a <code class="font-mono text-xs">_cache</code> collection suffix.
-            </AlertDescription>
-          </Alert>
-
-          <Card class="border-primary/25 bg-primary/5">
-            <CardHeader>
-              <CardTitle class="text-base">
-                Opt-in with <code class="font-mono text-sm">_cache</code>
-              </CardTitle>
-              <CardDescription>
-                <code class="font-mono text-xs">db.orders_cache.find(…)</code> is cached;
-                <code class="font-mono text-xs">db.orders.find(…)</code> always hits MongoDB.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle class="text-base">Default TTL</CardTitle>
-              <CardDescription>
-                Applied to all <code class="font-mono text-xs">*_cache</code> queries unless a per-collection override is set.
-              </CardDescription>
-            </CardHeader>
-            <CardContent class="flex flex-col gap-4">
-              <div class="grid gap-3 sm:grid-cols-[minmax(0,16rem)_auto] sm:items-end">
-                <Field class="gap-1.5">
-                  <FieldLabel for="default-ttl">Default TTL (seconds)</FieldLabel>
-                  <Input
-                    id="default-ttl"
-                    v-model.number="defaultTtl"
-                    type="number"
-                    min="1"
-                    step="1"
-                    :disabled="isReadOnly || defaultsBusy"
-                  />
-                </Field>
-                <Button
-                  v-if="canManage"
-                  class="w-full sm:w-auto"
-                  :disabled="defaultsBusy || isReadOnly"
-                  @click="saveDefaults"
-                >
-                  <Spinner v-if="defaultsBusy" data-icon="inline-start" />
-                  {{ defaultsBusy ? 'Saving…' : 'Save default TTL' }}
-                </Button>
-              </div>
-              <p v-if="policy" class="text-xs text-muted-foreground">
-                Active default: <strong class="text-foreground">{{ policy.defaultTtlSeconds }}s</strong>
-                · key version {{ policy.cacheKeyVersion }}
-                · updated {{ formatDate(policy.updatedAt) }}
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle class="text-base">Per-collection overrides</CardTitle>
-              <CardDescription>
-                Use the real collection name (<code class="font-mono text-xs">db.orders</code>, not
-                <code class="font-mono text-xs">db.orders_cache</code>).
-              </CardDescription>
-            </CardHeader>
-            <CardContent class="flex flex-col gap-4">
-              <Empty v-if="!collectionEntries.length" class="border border-dashed py-8">
-                <EmptyHeader>
-                  <EmptyTitle>No overrides</EmptyTitle>
-                  <EmptyDescription>
-                    All <code class="font-mono text-xs">*_cache</code> queries use the default TTL.
-                  </EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-
-              <div v-else class="overflow-hidden rounded-lg border">
-                <Table>
-                  <TableHeader>
-                    <TableRow class="hover:bg-transparent">
-                      <TableHead>Real collection</TableHead>
-                      <TableHead>Client uses</TableHead>
-                      <TableHead>TTL (s)</TableHead>
-                      <TableHead>Max result bytes</TableHead>
-                      <TableHead class="w-32" />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    <TableRow v-for="row in collectionEntries" :key="row.key">
-                      <TableCell class="font-mono text-xs">{{ row.key }}</TableCell>
-                      <TableCell class="font-mono text-xs text-muted-foreground">{{ row.key }}_cache</TableCell>
-                      <TableCell>
-                        <strong>{{ effectiveTtl(row) }}</strong>
-                        <span v-if="!row.ttlSeconds || row.ttlSeconds <= 0" class="text-xs text-muted-foreground"> (default)</span>
-                      </TableCell>
-                      <TableCell class="text-muted-foreground">
-                        {{ row.maxResultBytes ?? 'default (1 MiB)' }}
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          v-if="canManage"
-                          variant="ghost"
-                          size="sm"
-                          :disabled="collBusy"
-                          @click="removeCollectionOverride(row.key)"
-                        >
-                          Use default
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  </TableBody>
-                </Table>
-              </div>
-
-              <template v-if="canManage">
-                <div class="flex flex-col gap-3 border-t border-border/60 pt-4">
-                  <p class="wire-label">Add / update override</p>
-                  <div
-                    class="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,7rem)_minmax(0,9rem)_auto] lg:items-end"
-                  >
-                    <Field class="gap-1.5 sm:col-span-2 lg:col-span-1">
-                      <FieldLabel for="new-coll-key">Real db.collection</FieldLabel>
-                      <Input
-                        id="new-coll-key"
-                        v-model="newCollKey"
-                        class="font-mono"
-                        placeholder="mydb.orders"
-                        :disabled="collBusy"
-                      />
-                    </Field>
-                    <Field class="gap-1.5">
-                      <FieldLabel for="new-coll-ttl">TTL (s)</FieldLabel>
-                      <Input
-                        id="new-coll-ttl"
-                        v-model.number="newCollTtl"
-                        type="number"
-                        min="1"
-                        :placeholder="String(defaultTtl)"
-                        :disabled="collBusy"
-                      />
-                    </Field>
-                    <Field class="gap-1.5">
-                      <FieldLabel for="new-coll-max">Max bytes</FieldLabel>
-                      <Input
-                        id="new-coll-max"
-                        v-model.number="newCollMaxBytes"
-                        type="number"
-                        min="1"
-                        placeholder="1048576"
-                        :disabled="collBusy"
-                      />
-                    </Field>
-                    <Button class="w-full lg:w-auto" :disabled="collBusy" @click="addCollection">
-                      <Spinner v-if="collBusy" data-icon="inline-start" />
-                      Save override
-                    </Button>
-                  </div>
-                </div>
-              </template>
-            </CardContent>
-          </Card>
-
-          <Card v-if="canManage">
-            <CardHeader>
-              <CardTitle class="text-base">Manual invalidate</CardTitle>
-              <CardDescription>
-                Flush cache for a real collection or tags across all connections in this organization.
-              </CardDescription>
-            </CardHeader>
-            <CardContent class="grid gap-3 sm:grid-cols-3">
-              <Field class="gap-1.5">
-                <FieldLabel>Database</FieldLabel>
-                <Input v-model="invDb" class="font-mono" placeholder="mydb" :disabled="invBusy" />
-              </Field>
-              <Field class="gap-1.5">
-                <FieldLabel>Collection</FieldLabel>
-                <Input v-model="invColl" class="font-mono" placeholder="orders" :disabled="invBusy" />
-              </Field>
-              <Field class="gap-1.5">
-                <FieldLabel>Tags (comma-separated)</FieldLabel>
-                <Input v-model="invTags" placeholder="optional" :disabled="invBusy" />
-              </Field>
-            </CardContent>
-            <CardFooter class="border-t border-border/60 pt-4">
-              <Button :disabled="invBusy" @click="runInvalidate">
-                <Spinner v-if="invBusy" data-icon="inline-start" />
-                Invalidate
-              </Button>
-            </CardFooter>
-          </Card>
         </TabsContent>
 
         <!-- ========== MEMBERS ========== -->
@@ -1514,7 +1523,8 @@ async function confirmDeleteOrg() {
                 Pick a connection to issue app URIs.
               </p>
               <p>
-                <strong class="text-foreground">Caching</strong> is org-wide TTL policy. Clients opt in with
+                <strong class="text-foreground">Caching</strong> (TTL and overrides) is configured per
+                <strong class="text-foreground">connection</strong>. Clients opt in with
                 <code class="font-mono text-xs">_cache</code> on collection names.
               </p>
               <p>
@@ -1525,8 +1535,8 @@ async function confirmDeleteOrg() {
               <Button variant="outline" size="sm" @click="area = 'connections'">
                 Open connections
               </Button>
-              <Button variant="outline" size="sm" @click="area = 'caching'">
-                Open caching
+              <Button variant="outline" size="sm" @click="area = 'connections'; connPanel = 'caching'">
+                Open connection caching
               </Button>
               <Button variant="outline" size="sm" @click="area = 'members'">
                 Open members

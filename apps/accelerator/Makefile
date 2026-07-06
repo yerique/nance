@@ -48,8 +48,8 @@ seed:
 	echo "\nTesting connection $$CONN_ID..."; \
 	curl -s -X POST "http://localhost:8080/api/v1/tenants/demo/connections/$$CONN_ID/test" \
 		-H "Authorization: Bearer $${NANCE_ADMIN_TOKEN:-dev}" | cat; \
-	echo "\nSetting a sample cache policy..."; \
-	curl -s -X PUT http://localhost:8080/api/v1/tenants/demo/policy/collections/mydb.users \
+	echo "\nSetting a sample cache policy on the connection..."; \
+	curl -s -X PUT "http://localhost:8080/api/v1/tenants/demo/connections/$$CONN_ID/policy/collections/mydb.users" \
 		-H "Content-Type: application/json" \
 		-H "Authorization: Bearer $${NANCE_ADMIN_TOKEN:-dev}" \
 		-d '{"enabled":true,"ttlSeconds":300,"maxResultBytes":1048576}' | cat; \

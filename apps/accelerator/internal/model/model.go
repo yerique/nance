@@ -67,8 +67,9 @@ type CollectionPolicy struct {
 	MaxResultBytes *int `json:"maxResultBytes,omitempty"`
 }
 
-// CachePolicy is the declarative caching configuration for a tenant.
+// CachePolicy is the declarative caching configuration for one source connection.
 type CachePolicy struct {
+	ConnectionID      string                      `json:"connectionId"`
 	TenantID          string                      `json:"tenantId"`
 	DefaultTtlSeconds int                         `json:"defaultTtlSeconds"`
 	Collections       map[string]CollectionPolicy `json:"collections"`

@@ -307,7 +307,7 @@ func (s *ConnectionService) Test(ctx context.Context, tenantID, connectionID str
 // PolicyService manages cache policies.
 // CacheInvalidator is implemented by the proxy cache layer (optional on control plane).
 type CacheInvalidator interface {
-	InvalidateNamespace(ctx context.Context, tenantID, db, coll string) error
+	InvalidateNamespace(ctx context.Context, tenantID, connectionID, db, coll string) error
 	InvalidateTags(ctx context.Context, tenantID string, tags []string) error
 }
 
@@ -326,16 +326,38 @@ func (s *PolicyService) WithCache(c CacheInvalidator) *PolicyService {
 	return s
 }
 
-func (s *PolicyService) Get(ctx context.Context, tenantID string) (*model.CachePolicy, error) {
-	p, err := s.store.GetCachePolicy(ctx, tenantID)
+func (s *PolicyService) Get(ctx context.Context, tenantID, connectionID string) (*model.CachePolicy, error) {
+	c, err := s.store.GetConnection(ctx, connectionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrConnectionNotFound
+		}
+		return nil, err
+	}
+	if c.TenantID != tenantID {
+		return nil, ErrConnectionNotFound
+	}
+	p, err := s.store.GetCachePolicy(ctx, connectionID)
 	if err != nil {
 		return nil, err
 	}
+	p.ConnectionID = connectionID
+	p.TenantID = tenantID
 	return p, nil
 }
 
-func (s *PolicyService) SetCollectionPolicy(ctx context.Context, tenantID, dbColl string, pol model.CollectionPolicy) error {
-	current, err := s.store.GetCachePolicy(ctx, tenantID)
+func (s *PolicyService) SetCollectionPolicy(ctx context.Context, tenantID, connectionID, dbColl string, pol model.CollectionPolicy) error {
+	c, err := s.store.GetConnection(ctx, connectionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrConnectionNotFound
+		}
+		return err
+	}
+	if c.TenantID != tenantID {
+		return ErrConnectionNotFound
+	}
+	current, err := s.store.GetCachePolicy(ctx, connectionID)
 	if err != nil {
 		return err
 	}
@@ -343,33 +365,62 @@ func (s *PolicyService) SetCollectionPolicy(ctx context.Context, tenantID, dbCol
 		current.Collections = make(map[string]model.CollectionPolicy)
 	}
 	current.Collections[dbColl] = pol
+	current.ConnectionID = connectionID
 	current.TenantID = tenantID
 	if err := s.store.UpsertCachePolicy(ctx, current); err != nil {
 		return err
 	}
-	_ = s.store.RecordAudit(ctx, tenantID, "system", "update_collection_policy", map[string]string{"collection": dbColl})
+	_ = s.store.RecordAudit(ctx, tenantID, "system", "update_collection_policy", map[string]string{
+		"connection_id": connectionID, "collection": dbColl,
+	})
 	return nil
 }
 
-func (s *PolicyService) SetDefaults(ctx context.Context, tenantID string, defaultTTL int) error {
-	current, err := s.store.GetCachePolicy(ctx, tenantID)
+func (s *PolicyService) SetDefaults(ctx context.Context, tenantID, connectionID string, defaultTTL int) error {
+	if defaultTTL < 1 {
+		return errors.New("defaultTtlSeconds must be at least 1")
+	}
+	c, err := s.store.GetConnection(ctx, connectionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrConnectionNotFound
+		}
+		return err
+	}
+	if c.TenantID != tenantID {
+		return ErrConnectionNotFound
+	}
+	current, err := s.store.GetCachePolicy(ctx, connectionID)
 	if err != nil {
 		return err
 	}
 	current.DefaultTtlSeconds = defaultTTL
+	current.ConnectionID = connectionID
 	current.TenantID = tenantID
 	if err := s.store.UpsertCachePolicy(ctx, current); err != nil {
 		return err
 	}
-	_ = s.store.RecordAudit(ctx, tenantID, "system", "update_default_ttl", map[string]int{"ttl": defaultTTL})
+	_ = s.store.RecordAudit(ctx, tenantID, "system", "update_default_ttl", map[string]any{
+		"connection_id": connectionID, "ttl": defaultTTL,
+	})
 	return nil
 }
 
-// Invalidate flushes cache entries for a namespace and/or tags (Phase 3).
-func (s *PolicyService) Invalidate(ctx context.Context, tenantID, db, coll string, tags []string) error {
+// Invalidate flushes cache for one connection's namespace and/or tags.
+func (s *PolicyService) Invalidate(ctx context.Context, tenantID, connectionID, db, coll string, tags []string) error {
+	c, err := s.store.GetConnection(ctx, connectionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrConnectionNotFound
+		}
+		return err
+	}
+	if c.TenantID != tenantID {
+		return ErrConnectionNotFound
+	}
 	if s.cache != nil {
 		if db != "" && coll != "" {
-			if err := s.cache.InvalidateNamespace(ctx, tenantID, db, coll); err != nil {
+			if err := s.cache.InvalidateNamespace(ctx, tenantID, connectionID, db, coll); err != nil {
 				return err
 			}
 		}
@@ -380,7 +431,7 @@ func (s *PolicyService) Invalidate(ctx context.Context, tenantID, db, coll strin
 		}
 	}
 	_ = s.store.RecordAudit(ctx, tenantID, "system", "invalidate_cache", map[string]any{
-		"db": db, "coll": coll, "tags": tags,
+		"connection_id": connectionID, "db": db, "coll": coll, "tags": tags,
 	})
 	return nil
 }
@@ -413,6 +464,10 @@ type IssuedAccess struct {
 
 // BuildProxyConnectionURI builds a client URI for the data-plane proxy (PLAIN auth).
 // endpoint is host[:port] (scheme optional). No default database path — clients choose the DB.
+//
+// Query notes:
+//   - authSource=$external must stay unencoded (drivers/tools expect a literal $).
+//   - directConnection=true is required: the proxy is a single synthetic primary, not a replica set.
 func BuildProxyConnectionURI(endpoint, tenantID, rawToken string) string {
 	endpoint = strings.TrimSpace(endpoint)
 	endpoint = strings.TrimPrefix(endpoint, "mongodb://")
@@ -421,16 +476,18 @@ func BuildProxyConnectionURI(endpoint, tenantID, rawToken string) string {
 	if endpoint == "" {
 		endpoint = "127.0.0.1:27018"
 	}
+	// If only a hostname was configured, default to the proxy wire port (not Mongo's 27017).
+	if !strings.Contains(endpoint, ":") {
+		endpoint = endpoint + ":27018"
+	}
 	u := &url.URL{
 		Scheme: "mongodb",
 		User:   url.UserPassword(tenantID, rawToken),
 		Host:   endpoint,
 		Path:   "/",
 	}
-	q := url.Values{}
-	q.Set("authMechanism", "PLAIN")
-	q.Set("authSource", "$external")
-	u.RawQuery = q.Encode()
+	// Build RawQuery by hand so $external is not percent-encoded as %24external.
+	u.RawQuery = "authMechanism=PLAIN&authSource=$external&directConnection=true"
 	return u.String()
 }
 

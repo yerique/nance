@@ -14,10 +14,14 @@ type RedisInvalidator struct {
 	Connections cpstore.Store // optional; used to list connection IDs for tenant-wide flush
 }
 
-func (r *RedisInvalidator) InvalidateNamespace(ctx context.Context, tenantID, db, coll string) error {
+func (r *RedisInvalidator) InvalidateNamespace(ctx context.Context, tenantID, connectionID, db, coll string) error {
 	if r == nil || r.Store == nil {
 		return nil
 	}
+	if connectionID != "" {
+		return r.Store.InvalidateNamespace(ctx, tenantID, connectionID, db, coll)
+	}
+	// Tenant-wide: flush the namespace for every connection under the org.
 	if r.Connections != nil {
 		list, err := r.Connections.ListConnections(ctx, tenantID)
 		if err != nil {
@@ -30,7 +34,6 @@ func (r *RedisInvalidator) InvalidateNamespace(ctx context.Context, tenantID, db
 		}
 		return nil
 	}
-	// Fallback: connection-less registry key (legacy / tests)
 	return r.Store.InvalidateNamespace(ctx, tenantID, "", db, coll)
 }
 

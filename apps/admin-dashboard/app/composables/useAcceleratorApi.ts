@@ -196,23 +196,32 @@ export function useAcceleratorApi() {
     )
   }
 
-  async function getPolicy(tenantId: string) {
-    return $fetch<CachePolicy>(`/api/tenants/${encodeURIComponent(tenantId)}/policy`, {
-      headers: authHeaders(),
-    })
+  async function getPolicy(tenantId: string, connectionId: string) {
+    return $fetch<CachePolicy>(
+      `/api/tenants/${encodeURIComponent(tenantId)}/connections/${encodeURIComponent(connectionId)}/policy`,
+      { headers: authHeaders() },
+    )
   }
 
-  async function setDefaultTtl(tenantId: string, defaultTtlSeconds: number) {
-    return $fetch<StatusResponse>(`/api/tenants/${encodeURIComponent(tenantId)}/policy/defaults`, {
-      method: 'PUT',
-      headers: authHeaders(),
-      body: { defaultTtlSeconds },
-    })
-  }
-
-  async function setCollectionPolicy(tenantId: string, dbColl: string, policy: CollectionPolicy) {
+  async function setDefaultTtl(tenantId: string, connectionId: string, defaultTtlSeconds: number) {
     return $fetch<StatusResponse>(
-      `/api/tenants/${encodeURIComponent(tenantId)}/policy/collections/${encodeURIComponent(dbColl)}`,
+      `/api/tenants/${encodeURIComponent(tenantId)}/connections/${encodeURIComponent(connectionId)}/policy/defaults`,
+      {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: { defaultTtlSeconds },
+      },
+    )
+  }
+
+  async function setCollectionPolicy(
+    tenantId: string,
+    connectionId: string,
+    dbColl: string,
+    policy: CollectionPolicy,
+  ) {
+    return $fetch<StatusResponse>(
+      `/api/tenants/${encodeURIComponent(tenantId)}/connections/${encodeURIComponent(connectionId)}/policy/collections/${encodeURIComponent(dbColl)}`,
       { method: 'PUT', headers: authHeaders(), body: policy },
     )
   }
@@ -242,12 +251,15 @@ export function useAcceleratorApi() {
     })
   }
 
-  async function invalidate(tenantId: string, req: InvalidateRequest = {}) {
-    return $fetch<InvalidateResponse>(`/api/tenants/${encodeURIComponent(tenantId)}/invalidate`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: req,
-    })
+  async function invalidate(tenantId: string, connectionId: string, req: InvalidateRequest = {}) {
+    return $fetch<InvalidateResponse>(
+      `/api/tenants/${encodeURIComponent(tenantId)}/connections/${encodeURIComponent(connectionId)}/invalidate`,
+      {
+        method: 'POST',
+        headers: authHeaders(),
+        body: req,
+      },
+    )
   }
 
   async function getSavings(tenantId: string) {

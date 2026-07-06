@@ -87,12 +87,12 @@ func NewServer(
 				r.Post("/tenants/{tenantId}/connections/{connectionId}/tokens", h.IssueToken)
 				r.Delete("/tokens/{tokenId}", h.RevokeToken)
 
-				// Policies (GET member; PUT admin+)
-				r.Get("/tenants/{tenantId}/policy", h.GetPolicy)
-				r.Put("/tenants/{tenantId}/policy/collections/{dbColl}", h.SetCollectionPolicy)
-				r.Put("/tenants/{tenantId}/policy/defaults", h.SetDefaultTTL)
+				// Cache policy + invalidate (per connection)
+				r.Get("/tenants/{tenantId}/connections/{connectionId}/policy", h.GetPolicy)
+				r.Put("/tenants/{tenantId}/connections/{connectionId}/policy/collections/{dbColl}", h.SetCollectionPolicy)
+				r.Put("/tenants/{tenantId}/connections/{connectionId}/policy/defaults", h.SetDefaultTTL)
+				r.Post("/tenants/{tenantId}/connections/{connectionId}/invalidate", h.Invalidate)
 
-				r.Post("/tenants/{tenantId}/invalidate", h.Invalidate) // admin+
 				r.Get("/tenants/{tenantId}/savings", h.SavingsReport)
 			})
 		})

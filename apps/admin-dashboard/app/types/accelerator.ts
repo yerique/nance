@@ -58,6 +58,7 @@ export interface CollectionPolicy {
 }
 
 export interface CachePolicy {
+  connectionId: string
   tenantId: string
   defaultTtlSeconds: number
   collections: Record<string, CollectionPolicy>

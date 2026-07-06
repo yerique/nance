@@ -13,7 +13,7 @@ Operators and team members sign in with **email + one-time code**, manage **orga
 | **Roles** | **member** read-only · **admin** manage settings · **owner** + delete org |
 | **Members** | Invite by email (role limits by inviter), revoke invites, remove members |
 | **Connections** | Multiple named source Mongo URIs per org; test; **create proxy access** per connection (URI shown once); list/revoke credentials |
-| **Caching** | Default **60s** TTL for all `*_cache` queries; optional per-collection overrides |
+| **Caching** | Per **connection**: default **60s** TTL for `*_cache` queries; optional per-collection overrides; manual invalidate |
 | **Invalidate** | Explicit cache flush by real db/collection/tags (admin+) |
 | **Danger zone** | Owners only: delete org with email verification code |
 | **Platform** | Respects `GET /api/v1/platform` (`inviteOnly` / `allowOrgCreation` / `proxyPublicEndpoint`) |

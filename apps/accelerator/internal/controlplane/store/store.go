@@ -43,9 +43,11 @@ type Store interface {
 	DeleteConnection(ctx context.Context, connectionID string) error
 	UpdateConnectionValidated(ctx context.Context, connectionID string) error
 
-	// Policies
-	GetCachePolicy(ctx context.Context, tenantID string) (*model.CachePolicy, error)
+	// Policies (per connection)
+	GetCachePolicy(ctx context.Context, connectionID string) (*model.CachePolicy, error)
 	UpsertCachePolicy(ctx context.Context, p *model.CachePolicy) error
+	// ListAllCachePolicies returns policies for all connections (proxy refresh).
+	ListAllCachePolicies(ctx context.Context) ([]*model.CachePolicy, error)
 
 	// Tokens (bound to a connection)
 	CreateToken(ctx context.Context, tok *model.Token, tokenHash string) error
@@ -305,20 +307,25 @@ func (s *PostgresStore) UpdateConnectionValidated(ctx context.Context, connectio
 	return nil
 }
 
-// ===== Cache Policies =====
+// ===== Cache Policies (per connection) =====
 
-func (s *PostgresStore) GetCachePolicy(ctx context.Context, tenantID string) (*model.CachePolicy, error) {
+func (s *PostgresStore) GetCachePolicy(ctx context.Context, connectionID string) (*model.CachePolicy, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT tenant_id, default_ttl_seconds, collections, cache_key_version, updated_at
-		FROM cache_policies WHERE tenant_id = $1
-	`, tenantID)
+		SELECT connection_id, tenant_id, default_ttl_seconds, collections, cache_key_version, updated_at
+		FROM connection_cache_policies WHERE connection_id = $1
+	`, connectionID)
 
 	var p model.CachePolicy
 	var collectionsJSON []byte
-	if err := row.Scan(&p.TenantID, &p.DefaultTtlSeconds, &collectionsJSON, &p.CacheKeyVersion, &p.UpdatedAt); err != nil {
+	if err := row.Scan(&p.ConnectionID, &p.TenantID, &p.DefaultTtlSeconds, &collectionsJSON, &p.CacheKeyVersion, &p.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Default 60s TTL for all _cache collections; override via policy API.
+			// Resolve tenant from connection when possible for a coherent default.
+			tenantID := ""
+			if c, cerr := s.GetConnection(ctx, connectionID); cerr == nil && c != nil {
+				tenantID = c.TenantID
+			}
 			return &model.CachePolicy{
+				ConnectionID:      connectionID,
 				TenantID:          tenantID,
 				DefaultTtlSeconds: 60,
 				Collections:       map[string]model.CollectionPolicy{},
@@ -339,21 +346,62 @@ func (s *PostgresStore) GetCachePolicy(ctx context.Context, tenantID string) (*m
 }
 
 func (s *PostgresStore) UpsertCachePolicy(ctx context.Context, p *model.CachePolicy) error {
+	if p.ConnectionID == "" {
+		return fmt.Errorf("connectionId is required")
+	}
+	if p.TenantID == "" {
+		c, err := s.GetConnection(ctx, p.ConnectionID)
+		if err != nil {
+			return err
+		}
+		p.TenantID = c.TenantID
+	}
 	collectionsJSON, err := json.Marshal(p.Collections)
 	if err != nil {
 		return err
 	}
+	if p.Collections == nil {
+		collectionsJSON = []byte("{}")
+	}
 
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO cache_policies (tenant_id, default_ttl_seconds, collections, cache_key_version, updated_at)
-		VALUES ($1, $2, $3, $4, NOW())
-		ON CONFLICT (tenant_id) DO UPDATE SET
+		INSERT INTO connection_cache_policies (connection_id, tenant_id, default_ttl_seconds, collections, cache_key_version, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (connection_id) DO UPDATE SET
 			default_ttl_seconds = EXCLUDED.default_ttl_seconds,
 			collections = EXCLUDED.collections,
 			cache_key_version = EXCLUDED.cache_key_version,
 			updated_at = NOW()
-	`, p.TenantID, p.DefaultTtlSeconds, collectionsJSON, p.CacheKeyVersion)
+	`, p.ConnectionID, p.TenantID, p.DefaultTtlSeconds, collectionsJSON, p.CacheKeyVersion)
 	return err
+}
+
+func (s *PostgresStore) ListAllCachePolicies(ctx context.Context) ([]*model.CachePolicy, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT connection_id, tenant_id, default_ttl_seconds, collections, cache_key_version, updated_at
+		FROM connection_cache_policies
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*model.CachePolicy, 0)
+	for rows.Next() {
+		var p model.CachePolicy
+		var collectionsJSON []byte
+		if err := rows.Scan(&p.ConnectionID, &p.TenantID, &p.DefaultTtlSeconds, &collectionsJSON, &p.CacheKeyVersion, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if len(collectionsJSON) > 0 {
+			if err := json.Unmarshal(collectionsJSON, &p.Collections); err != nil {
+				return nil, err
+			}
+		} else {
+			p.Collections = map[string]model.CollectionPolicy{}
+		}
+		out = append(out, &p)
+	}
+	return out, rows.Err()
 }
 
 // ===== Tokens =====

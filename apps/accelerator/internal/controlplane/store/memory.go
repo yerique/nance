@@ -240,18 +240,22 @@ func (m *MemoryStore) UpdateConnectionValidated(_ context.Context, connectionID 
 	return nil
 }
 
-func (m *MemoryStore) GetCachePolicy(_ context.Context, tenantID string) (*model.CachePolicy, error) {
+func (m *MemoryStore) GetCachePolicy(_ context.Context, connectionID string) (*model.CachePolicy, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if p, ok := m.policies[tenantID]; ok {
+	if p, ok := m.policies[connectionID]; ok {
 		cp := *p
 		if cp.Collections == nil {
 			cp.Collections = map[string]model.CollectionPolicy{}
 		}
 		return &cp, nil
 	}
+	tenantID := ""
+	if c, ok := m.connections[connectionID]; ok {
+		tenantID = c.TenantID
+	}
 	return &model.CachePolicy{
-		TenantID: tenantID, DefaultTtlSeconds: 60,
+		ConnectionID: connectionID, TenantID: tenantID, DefaultTtlSeconds: 60,
 		Collections: map[string]model.CollectionPolicy{}, CacheKeyVersion: 1,
 	}, nil
 }
@@ -263,14 +267,27 @@ func (m *MemoryStore) UpsertCachePolicy(_ context.Context, p *model.CachePolicy)
 	if cp.Collections == nil {
 		cp.Collections = map[string]model.CollectionPolicy{}
 	}
-	// deep-ish copy collections
 	cols := make(map[string]model.CollectionPolicy, len(cp.Collections))
 	for k, v := range cp.Collections {
 		cols[k] = v
 	}
 	cp.Collections = cols
-	m.policies[p.TenantID] = &cp
+	m.policies[p.ConnectionID] = &cp
 	return nil
+}
+
+func (m *MemoryStore) ListAllCachePolicies(_ context.Context) ([]*model.CachePolicy, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*model.CachePolicy, 0, len(m.policies))
+	for _, p := range m.policies {
+		cp := *p
+		if cp.Collections == nil {
+			cp.Collections = map[string]model.CollectionPolicy{}
+		}
+		out = append(out, &cp)
+	}
+	return out, nil
 }
 
 func (m *MemoryStore) CreateToken(_ context.Context, tok *model.Token, tokenHash string) error {

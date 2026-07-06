@@ -719,16 +719,21 @@ func (h *Handlers) TestConnection(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// ===== Policy handlers =====
+// ===== Policy handlers (per connection) =====
 
 func (h *Handlers) GetPolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
+	connectionID := chi.URLParam(r, "connectionId")
 	if err := h.ensureTenantAccess(r, tenantID); err != nil {
 		mapAuthErr(w, err)
 		return
 	}
-	p, err := h.policies.Get(r.Context(), tenantID)
+	p, err := h.policies.Get(r.Context(), tenantID, connectionID)
 	if err != nil {
+		if errors.Is(err, service.ErrConnectionNotFound) {
+			writeError(w, http.StatusNotFound, "connection not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -737,6 +742,7 @@ func (h *Handlers) GetPolicy(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) SetCollectionPolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
+	connectionID := chi.URLParam(r, "connectionId")
 	dbColl := chi.URLParam(r, "dbColl")
 	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
 		mapAuthErr(w, err)
@@ -747,7 +753,11 @@ func (h *Handlers) SetCollectionPolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if err := h.policies.SetCollectionPolicy(r.Context(), tenantID, dbColl, cp); err != nil {
+	if err := h.policies.SetCollectionPolicy(r.Context(), tenantID, connectionID, dbColl, cp); err != nil {
+		if errors.Is(err, service.ErrConnectionNotFound) {
+			writeError(w, http.StatusNotFound, "connection not found")
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -756,6 +766,7 @@ func (h *Handlers) SetCollectionPolicy(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) SetDefaultTTL(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
+	connectionID := chi.URLParam(r, "connectionId")
 	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
 		mapAuthErr(w, err)
 		return
@@ -767,7 +778,11 @@ func (h *Handlers) SetDefaultTTL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if err := h.policies.SetDefaults(r.Context(), tenantID, req.DefaultTTL); err != nil {
+	if err := h.policies.SetDefaults(r.Context(), tenantID, connectionID, req.DefaultTTL); err != nil {
+		if errors.Is(err, service.ErrConnectionNotFound) {
+			writeError(w, http.StatusNotFound, "connection not found")
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -776,6 +791,7 @@ func (h *Handlers) SetDefaultTTL(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Invalidate(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
+	connectionID := chi.URLParam(r, "connectionId")
 	if err := h.ensureTenantAdmin(r, tenantID); err != nil {
 		mapAuthErr(w, err)
 		return
@@ -792,16 +808,21 @@ func (h *Handlers) Invalidate(w http.ResponseWriter, r *http.Request) {
 	if req.Coll == "" {
 		req.Coll = r.URL.Query().Get("coll")
 	}
-	if err := h.policies.Invalidate(r.Context(), tenantID, req.DB, req.Coll, req.Tags); err != nil {
+	if err := h.policies.Invalidate(r.Context(), tenantID, connectionID, req.DB, req.Coll, req.Tags); err != nil {
+		if errors.Is(err, service.ErrConnectionNotFound) {
+			writeError(w, http.StatusNotFound, "connection not found")
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "invalidated",
-		"tenantId": tenantID,
-		"db":       req.DB,
-		"coll":     req.Coll,
-		"tags":     req.Tags,
+		"status":       "invalidated",
+		"tenantId":     tenantID,
+		"connectionId": connectionID,
+		"db":           req.DB,
+		"coll":         req.Coll,
+		"tags":         req.Tags,
 	})
 }
 

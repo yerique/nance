@@ -178,10 +178,10 @@ Base path: **`/api/v1`**. Health: `/healthz`, `/readyz`, `/metrics`.
 | `POST` | `/tenants/{id}/connections/{connectionId}/test` | Connectivity test |
 | `GET` / `POST` | `/tenants/{id}/connections/{connectionId}/tokens` | List / create proxy access (returns `proxyConnectionUri` once) |
 | `DELETE` | `/tokens/{tokenId}` | Revoke proxy access |
-| `GET` | `/tenants/{id}/policy` | Cache policy (org-wide) |
-| `PUT` | `/tenants/{id}/policy/defaults` | `{ "defaultTtlSeconds" }` |
-| `PUT` | `/tenants/{id}/policy/collections/{db.coll}` | Per-collection TTL override |
-| `POST` | `/tenants/{id}/invalidate` | Flush cache namespace/tags (all connections in org) |
+| `GET` | `/tenants/{id}/connections/{connectionId}/policy` | Cache policy for this connection |
+| `PUT` | `/tenants/{id}/connections/{connectionId}/policy/defaults` | `{ "defaultTtlSeconds" }` |
+| `PUT` | `/tenants/{id}/connections/{connectionId}/policy/collections/{db.coll}` | Per-collection TTL override |
+| `POST` | `/tenants/{id}/connections/{connectionId}/invalidate` | Flush cache namespace/tags for this connection |
 | `GET` | `/tenants/{id}/savings` | Metrics hints |
 
 **Membership:** members = read; admins/owners = writes; only owners delete org (with email code). Platform admin token bypasses membership for ops/bootstrap.

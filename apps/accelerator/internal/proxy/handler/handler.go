@@ -377,7 +377,7 @@ func (h *Handler) tryCacheRead(
 	// Policy supplies TTL / max bytes / key version; opt-in is the _cache suffix, not Enabled.
 	var dec policy.Decision
 	if h.deps.Policies != nil {
-		dec = h.deps.Policies.Resolve(tenantID, dbName, collName)
+		dec = h.deps.Policies.Resolve(connectionID, dbName, collName)
 	} else {
 		dec = policy.Decision{Enabled: true, TTL: time.Duration(policy.DefaultTTLSeconds) * time.Second, MaxResultBytes: 1 << 20, CacheKeyVersion: 1}
 	}
@@ -601,7 +601,7 @@ func (h *Handler) maybePopulateCache(
 	}
 	var dec policy.Decision
 	if h.deps.Policies != nil {
-		dec = h.deps.Policies.Resolve(tenantID, dbName, collName)
+		dec = h.deps.Policies.Resolve(connectionID, dbName, collName)
 	} else {
 		dec = policy.Decision{Enabled: true, TTL: time.Duration(policy.DefaultTTLSeconds) * time.Second, MaxResultBytes: 1 << 20, CacheKeyVersion: 1}
 	}

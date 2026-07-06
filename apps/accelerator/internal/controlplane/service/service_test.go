@@ -37,22 +37,27 @@ func TestPolicyService_DefaultsAndCollection(t *testing.T) {
 	ms := store.NewMemoryStore()
 	svc := NewPolicyService(ms)
 	ctx := context.Background()
-	if err := svc.SetDefaults(ctx, "t1", 30); err != nil {
+	_, _ = NewTenantService(ms).Create(ctx, "t1", "Tenant")
+	_ = ms.CreateConnection(ctx, &model.Connection{
+		ID: "conn1", TenantID: "t1", Name: "prod",
+		URICiphertext: []byte("x"), Nonce: []byte("n"), DEKVersion: "v1",
+	})
+	if err := svc.SetDefaults(ctx, "t1", "conn1", 30); err != nil {
 		t.Fatal(err)
 	}
-	p, err := svc.Get(ctx, "t1")
-	if err != nil || p.DefaultTtlSeconds != 30 {
+	p, err := svc.Get(ctx, "t1", "conn1")
+	if err != nil || p.DefaultTtlSeconds != 30 || p.ConnectionID != "conn1" {
 		t.Fatalf("%+v %v", p, err)
 	}
 	pol := model.CollectionPolicy{Enabled: true, TTLSeconds: 10}
-	if err := svc.SetCollectionPolicy(ctx, "t1", "db.c", pol); err != nil {
+	if err := svc.SetCollectionPolicy(ctx, "t1", "conn1", "db.c", pol); err != nil {
 		t.Fatal(err)
 	}
-	p2, _ := svc.Get(ctx, "t1")
+	p2, _ := svc.Get(ctx, "t1", "conn1")
 	if p2.Collections["db.c"].TTLSeconds != 10 {
 		t.Fatalf("%+v", p2.Collections)
 	}
-	if err := svc.Invalidate(ctx, "t1", "db", "c", nil); err != nil {
+	if err := svc.Invalidate(ctx, "t1", "conn1", "db", "c", nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -117,8 +122,19 @@ func TestBuildProxyConnectionURI(t *testing.T) {
 	if !strings.HasPrefix(uri, "mongodb://") {
 		t.Fatalf("scheme: %s", uri)
 	}
-	if !strings.Contains(uri, "authSource") {
-		t.Fatalf("missing authSource: %s", uri)
+	if !strings.Contains(uri, "authSource=$external") {
+		t.Fatalf("want literal $external, got: %s", uri)
+	}
+	if strings.Contains(uri, "%24") {
+		t.Fatalf("authSource should not be percent-encoded: %s", uri)
+	}
+	if !strings.Contains(uri, "directConnection=true") {
+		t.Fatalf("missing directConnection: %s", uri)
+	}
+	// hostname without port → default proxy port 27018
+	uriHost := BuildProxyConnectionURI("nance-proxy.example.com", "org", "tok")
+	if !strings.Contains(uriHost, "nance-proxy.example.com:27018") {
+		t.Fatalf("default port: %s", uriHost)
 	}
 	uri2 := BuildProxyConnectionURI("", "org", "tok")
 	if !strings.Contains(uri2, "127.0.0.1:27018") {
