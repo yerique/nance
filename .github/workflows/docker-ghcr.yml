@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [main, dev]
   workflow_dispatch:
+    inputs:
+      force_all:
+        description: "Build all images even if paths are unchanged"
+        type: boolean
+        default: true
 
 env:
   REGISTRY: ghcr.io
@@ -20,24 +25,124 @@ permissions:
   packages: write
 
 jobs:
+  # Decide which images to build from path filters (or force-all for tags / manual).
+  detect-changes:
+    name: Detect changed apps
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      has_builds: ${{ steps.matrix.outputs.has_builds }}
+      controlplane: ${{ steps.matrix.outputs.controlplane }}
+      proxy: ${{ steps.matrix.outputs.proxy }}
+      dashboard: ${{ steps.matrix.outputs.dashboard }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Path filters
+        id: filter
+        # Tags always rebuild all (handled in matrix step). Still fine to run filters.
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: dorny/paths-filter@v3
+        with:
+          # Compare against the merge base for PRs; previous commit for push.
+          filters: |
+            accelerator:
+              - 'apps/accelerator/**'
+            dashboard:
+              - 'apps/admin-dashboard/**'
+            workflow:
+              - '.github/workflows/docker-ghcr.yml'
+
+      - name: Build matrix JSON
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FORCE_ALL=false
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            FORCE_ALL=true
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.force_all }}" == "true" ]]; then
+            FORCE_ALL=true
+          fi
+
+          ACCEL=false
+          DASH=false
+          if [[ "$FORCE_ALL" == "true" ]]; then
+            ACCEL=true
+            DASH=true
+          else
+            # workflow change → rebuild everything that the workflow publishes
+            if [[ "${{ steps.filter.outputs.workflow }}" == "true" ]]; then
+              ACCEL=true
+              DASH=true
+            else
+              [[ "${{ steps.filter.outputs.accelerator }}" == "true" ]] && ACCEL=true
+              [[ "${{ steps.filter.outputs.dashboard }}" == "true" ]] && DASH=true
+            fi
+          fi
+
+          # controlplane + proxy share apps/accelerator
+          CP="$ACCEL"
+          PROXY="$ACCEL"
+          DASHBOARD="$DASH"
+
+          INCLUDE='[]'
+          append() {
+            local name="$1" dockerfile="$2" context="$3" suffix="$4"
+            INCLUDE=$(jq -c \
+              --arg name "$name" \
+              --arg dockerfile "$dockerfile" \
+              --arg context "$context" \
+              --arg image_suffix "$suffix" \
+              '. + [{name:$name, dockerfile:$dockerfile, context:$context, image_suffix:$image_suffix}]' \
+              <<<"$INCLUDE")
+          }
+
+          if [[ "$CP" == "true" ]]; then
+            append controlplane apps/accelerator/Dockerfile.controlplane apps/accelerator nance/accelerator-controlplane
+          fi
+          if [[ "$PROXY" == "true" ]]; then
+            append proxy apps/accelerator/Dockerfile.proxy apps/accelerator nance/accelerator-proxy
+          fi
+          if [[ "$DASHBOARD" == "true" ]]; then
+            append dashboard apps/admin-dashboard/Dockerfile apps/admin-dashboard nance/admin-dashboard
+          fi
+
+          HAS_BUILDS=false
+          if [[ "$INCLUDE" != "[]" ]]; then
+            HAS_BUILDS=true
+          fi
+
+          # matrix must be an object with include for strategy.matrix
+          MATRIX=$(jq -c -n --argjson include "$INCLUDE" '{include:$include}')
+
+          {
+            echo "matrix<<EOF"
+            echo "$MATRIX"
+            echo "EOF"
+            echo "has_builds=$HAS_BUILDS"
+            echo "controlplane=$CP"
+            echo "proxy=$PROXY"
+            echo "dashboard=$DASHBOARD"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "### Build selection" >> "$GITHUB_STEP_SUMMARY"
+          echo "- force_all: \`$FORCE_ALL\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- controlplane: \`$CP\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- proxy: \`$PROXY\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- dashboard: \`$DASHBOARD\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- matrix: \`$MATRIX\`" >> "$GITHUB_STEP_SUMMARY"
+
   build-and-push:
+    name: Build ${{ matrix.name }}
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_builds == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: controlplane
-            dockerfile: apps/accelerator/Dockerfile.controlplane
-            context: apps/accelerator
-            image_suffix: nance/accelerator-controlplane
-          - name: proxy
-            dockerfile: apps/accelerator/Dockerfile.proxy
-            context: apps/accelerator
-            image_suffix: nance/accelerator-proxy
-          - name: dashboard
-            dockerfile: apps/admin-dashboard/Dockerfile
-            context: apps/admin-dashboard
-            image_suffix: nance/admin-dashboard
+      matrix: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
 
     steps:
       - name: Checkout
@@ -87,11 +192,14 @@ jobs:
           echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-  # Open a PR in nance-deploy so merge applies the new images to the cluster.
+  # Open a PR in nance-deploy so merge applies only the images that were rebuilt.
   open-deploy-pr:
     name: Open deploy PR (nance-deploy)
-    needs: build-and-push
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [detect-changes, build-and-push]
+    if: >
+      github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && needs.detect-changes.outputs.has_builds == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -108,6 +216,9 @@ jobs:
           echo "controlplane=${REG}/${OWNER}/nance/accelerator-controlplane" >> "$GITHUB_OUTPUT"
           echo "proxy=${REG}/${OWNER}/nance/accelerator-proxy" >> "$GITHUB_OUTPUT"
           echo "dashboard=${REG}/${OWNER}/nance/admin-dashboard" >> "$GITHUB_OUTPUT"
+          echo "build_cp=${{ needs.detect-changes.outputs.controlplane }}" >> "$GITHUB_OUTPUT"
+          echo "build_proxy=${{ needs.detect-changes.outputs.proxy }}" >> "$GITHUB_OUTPUT"
+          echo "build_dash=${{ needs.detect-changes.outputs.dashboard }}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout deploy repo
         uses: actions/checkout@v4
@@ -122,27 +233,50 @@ jobs:
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Bump image tags in Kustomize overlay
+      - name: Bump changed image tags in Kustomize overlay
         env:
           CP_IMAGE: ${{ steps.images.outputs.controlplane }}
           PROXY_IMAGE: ${{ steps.images.outputs.proxy }}
           DASH_IMAGE: ${{ steps.images.outputs.dashboard }}
           TAG: ${{ steps.images.outputs.tag }}
+          BUILD_CP: ${{ steps.images.outputs.build_cp }}
+          BUILD_PROXY: ${{ steps.images.outputs.build_proxy }}
+          BUILD_DASH: ${{ steps.images.outputs.build_dash }}
           OVERLAY: ${{ env.DEPLOY_OVERLAY }}
         run: |
           set -euo pipefail
           KUSTOMIZATION="${OVERLAY}/kustomization.yaml"
           test -f "$KUSTOMIZATION"
 
-          yq -i "(.images[] | select(.name == \"controlplane\") | .newName) = \"${CP_IMAGE}\"" "$KUSTOMIZATION"
-          yq -i "(.images[] | select(.name == \"controlplane\") | .newTag) = \"${TAG}\"" "$KUSTOMIZATION"
-          yq -i "(.images[] | select(.name == \"proxy\") | .newName) = \"${PROXY_IMAGE}\"" "$KUSTOMIZATION"
-          yq -i "(.images[] | select(.name == \"proxy\") | .newTag) = \"${TAG}\"" "$KUSTOMIZATION"
-          yq -i "(.images[] | select(.name == \"dashboard\") | .newName) = \"${DASH_IMAGE}\"" "$KUSTOMIZATION"
-          yq -i "(.images[] | select(.name == \"dashboard\") | .newTag) = \"${TAG}\"" "$KUSTOMIZATION"
+          CHANGED=()
+          if [[ "$BUILD_CP" == "true" ]]; then
+            yq -i "(.images[] | select(.name == \"controlplane\") | .newName) = \"${CP_IMAGE}\"" "$KUSTOMIZATION"
+            yq -i "(.images[] | select(.name == \"controlplane\") | .newTag) = \"${TAG}\"" "$KUSTOMIZATION"
+            CHANGED+=("controlplane")
+          fi
+          if [[ "$BUILD_PROXY" == "true" ]]; then
+            yq -i "(.images[] | select(.name == \"proxy\") | .newName) = \"${PROXY_IMAGE}\"" "$KUSTOMIZATION"
+            yq -i "(.images[] | select(.name == \"proxy\") | .newTag) = \"${TAG}\"" "$KUSTOMIZATION"
+            CHANGED+=("proxy")
+          fi
+          if [[ "$BUILD_DASH" == "true" ]]; then
+            yq -i "(.images[] | select(.name == \"dashboard\") | .newName) = \"${DASH_IMAGE}\"" "$KUSTOMIZATION"
+            yq -i "(.images[] | select(.name == \"dashboard\") | .newTag) = \"${TAG}\"" "$KUSTOMIZATION"
+            CHANGED+=("dashboard")
+          fi
 
+          if [[ ${#CHANGED[@]} -eq 0 ]]; then
+            echo "No image components selected; nothing to bump."
+            exit 0
+          fi
+
+          echo "Updated components: ${CHANGED[*]}"
           echo "Updated ${KUSTOMIZATION}:"
           cat "$KUSTOMIZATION"
+
+          {
+            echo "changed=${CHANGED[*]}"
+          } >> "$GITHUB_ENV"
 
       - name: Create pull request
         uses: peter-evans/create-pull-request@v6
@@ -157,11 +291,13 @@ jobs:
 
             Opened by [`${{ github.repository }}`](https://github.com/${{ github.repository }}) on commit `${{ github.sha }}`.
 
-            | Component | Image |
-            |-----------|--------|
-            | controlplane | `${{ steps.images.outputs.controlplane }}:${{ steps.images.outputs.tag }}` |
-            | proxy | `${{ steps.images.outputs.proxy }}:${{ steps.images.outputs.tag }}` |
-            | dashboard | `${{ steps.images.outputs.dashboard }}:${{ steps.images.outputs.tag }}` |
+            Only components with source changes in this commit were rebuilt and bumped:
+
+            | Component | Rebuilt | Image |
+            |-----------|---------|--------|
+            | controlplane | `${{ needs.detect-changes.outputs.controlplane }}` | `${{ steps.images.outputs.controlplane }}:${{ steps.images.outputs.tag }}` |
+            | proxy | `${{ needs.detect-changes.outputs.proxy }}` | `${{ steps.images.outputs.proxy }}:${{ steps.images.outputs.tag }}` |
+            | dashboard | `${{ needs.detect-changes.outputs.dashboard }}` | `${{ steps.images.outputs.dashboard }}:${{ steps.images.outputs.tag }}` |
 
             Source: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
 

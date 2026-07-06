@@ -145,9 +145,12 @@ func runMigrationsDirect(ctx context.Context, migrationDir string, logger *slog.
 			return err
 		}
 
-		statements := splitSQLStatements(string(content))
+		// Strip full-line comments first so semicolons inside comments do not
+		// split statements (e.g. "-- note; more text" used to break migrations).
+		body := stripSQLComments(string(content))
+		statements := splitSQLStatements(body)
 		for _, stmt := range statements {
-			stmt = stripSQLComments(strings.TrimSpace(stmt))
+			stmt = strings.TrimSpace(stmt)
 			if stmt == "" {
 				continue
 			}
@@ -166,13 +169,12 @@ func runMigrationsDirect(ctx context.Context, migrationDir string, logger *slog.
 }
 
 func splitSQLStatements(sql string) []string {
-	// Very simple splitter: split on ; (good enough for our pure DDL migrations)
+	// Simple splitter: split on ; (DDL-only migrations, no string literals with ';').
 	parts := strings.Split(sql, ";")
 	return parts
 }
 
-// stripSQLComments removes leading full-line -- comments so migrate headers
-// like "-- +migrate Up" do not cause the entire first statement to be skipped.
+// stripSQLComments removes full-line -- comments (migrate headers and notes).
 func stripSQLComments(stmt string) string {
 	lines := strings.Split(stmt, "\n")
 	var kept []string

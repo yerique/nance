@@ -1,6 +1,6 @@
 -- +migrate Up
--- Multi-connection: named source Mongo URIs per org; tokens bind to a connection.
--- Keep statements free of PL/pgSQL (DO $$) — control plane splits SQL on ';' only.
+-- Multi-connection: named source Mongo URIs per org. Tokens bind to a connection.
+-- Avoid semicolons in comments: the control plane migration runner splits on ';'.
 
 CREATE TABLE IF NOT EXISTS connections (
     id TEXT PRIMARY KEY,
