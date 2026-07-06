@@ -1,4 +1,20 @@
 <script setup lang="ts">
+import { ArrowLeftIcon, MailIcon } from '@lucide/vue'
+import { toast } from 'vue-sonner'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Spinner } from '@/components/ui/spinner'
+
 definePageMeta({ layout: false })
 
 const api = useAcceleratorApi()
@@ -9,7 +25,6 @@ const email = ref('')
 const code = ref('')
 const loading = ref(false)
 const error = ref('')
-const info = ref('')
 const inviteOnly = ref(false)
 
 function needsOnboarding(name?: string | null) {
@@ -30,7 +45,6 @@ onMounted(async () => {
 
 async function sendCode() {
   error.value = ''
-  info.value = ''
   if (!email.value.trim()) {
     error.value = 'Email is required'
     return
@@ -39,7 +53,9 @@ async function sendCode() {
   try {
     await api.requestCode(email.value.trim())
     step.value = 'code'
-    info.value = 'Check your email for a 6-digit code (also printed in control plane logs in dev).'
+    toast.message('Check your email', {
+      description: 'We sent a 6-digit code (also printed in control plane logs in dev).',
+    })
   }
   catch (e) {
     error.value = api.apiErrorMessage(e)
@@ -71,91 +87,114 @@ async function verify() {
 </script>
 
 <template>
-  <div class="login-page">
-    <div class="login-card card">
-      <div class="login-brand">
-        <span class="logo-mark">N</span>
-        <div>
-          <h1>Nance</h1>
-          <p class="subtitle">Sign in with your email</p>
-          <p v-if="inviteOnly" class="invite-hint">This server is invite-only — you can sign in, then accept an organization invite. Creating new organizations is disabled.</p>
+  <div class="auth-lattice flex min-h-svh items-center justify-center p-4 sm:p-8">
+    <div class="flex w-full max-w-md flex-col gap-6">
+      <div class="flex flex-col items-center gap-3 text-center">
+        <span
+          class="flex size-11 items-center justify-center rounded-xl bg-primary font-mono text-lg font-bold text-primary-foreground shadow-[0_0_32px_-6px] shadow-primary/60"
+        >
+          N
+        </span>
+        <div class="flex flex-col gap-1">
+          <p class="wire-label">Nance accelerator</p>
+          <h1 class="text-2xl font-semibold tracking-tight text-foreground">
+            Sign in to the control plane
+          </h1>
+          <p class="text-sm text-muted-foreground">
+            Passwordless email code — no password to store or rotate.
+          </p>
         </div>
       </div>
 
-      <div v-if="error" class="alert alert-error">{{ error }}</div>
-      <div v-if="info" class="alert alert-info">{{ info }}</div>
+      <Card class="border-border/80 shadow-lg shadow-black/20">
+        <CardHeader class="border-b border-border/60 pb-4">
+          <CardTitle class="text-base">
+            {{ step === 'email' ? 'Your work email' : 'Enter verification code' }}
+          </CardTitle>
+          <CardDescription>
+            <template v-if="step === 'email'">
+              We'll send a one-time code to verify it's you.
+            </template>
+            <template v-else>
+              Code sent to <span class="font-medium text-foreground">{{ email }}</span>
+            </template>
+          </CardDescription>
+        </CardHeader>
 
-      <form v-if="step === 'email'" class="stack" @submit.prevent="sendCode">
-        <label class="field">
-          <span>Email</span>
-          <input v-model="email" type="email" autocomplete="email" placeholder="you@company.com" required>
-        </label>
-        <button class="btn btn-primary" type="submit" :disabled="loading">
-          {{ loading ? 'Sending…' : 'Continue' }}
-        </button>
-      </form>
+        <CardContent class="pt-5">
+          <Alert v-if="inviteOnly" class="mb-4">
+            <MailIcon />
+            <AlertTitle>Invite-only instance</AlertTitle>
+            <AlertDescription>
+              You can sign in, then accept an organization invite. Creating new organizations is disabled.
+            </AlertDescription>
+          </Alert>
 
-      <form v-else class="stack" @submit.prevent="verify">
-        <p class="muted">Code sent to <strong>{{ email }}</strong></p>
-        <label class="field">
-          <span>Verification code</span>
-          <input v-model="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" required>
-        </label>
-        <button class="btn btn-primary" type="submit" :disabled="loading">
-          {{ loading ? 'Verifying…' : 'Sign in' }}
-        </button>
-        <button class="btn btn-ghost" type="button" :disabled="loading" @click="step = 'email'">
-          Use a different email
-        </button>
-      </form>
+          <Alert v-if="error" variant="destructive" class="mb-4">
+            <AlertTitle>Could not continue</AlertTitle>
+            <AlertDescription>{{ error }}</AlertDescription>
+          </Alert>
+
+          <form v-if="step === 'email'" class="flex flex-col gap-4" @submit.prevent="sendCode">
+            <FieldGroup>
+              <Field>
+                <FieldLabel for="email">Email</FieldLabel>
+                <Input
+                  id="email"
+                  v-model="email"
+                  type="email"
+                  autocomplete="email"
+                  placeholder="you@company.com"
+                  required
+                  :disabled="loading"
+                />
+              </Field>
+            </FieldGroup>
+            <Button type="submit" class="w-full" :disabled="loading">
+              <Spinner v-if="loading" data-icon="inline-start" />
+              {{ loading ? 'Sending…' : 'Continue' }}
+            </Button>
+          </form>
+
+          <form v-else class="flex flex-col gap-4" @submit.prevent="verify">
+            <FieldGroup>
+              <Field>
+                <FieldLabel for="code">Verification code</FieldLabel>
+                <Input
+                  id="code"
+                  v-model="code"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="one-time-code"
+                  placeholder="123456"
+                  class="font-mono tracking-widest"
+                  required
+                  :disabled="loading"
+                />
+                <FieldDescription>6-digit code from your inbox.</FieldDescription>
+              </Field>
+            </FieldGroup>
+            <Button type="submit" class="w-full" :disabled="loading">
+              <Spinner v-if="loading" data-icon="inline-start" />
+              {{ loading ? 'Verifying…' : 'Sign in' }}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              class="w-full"
+              :disabled="loading"
+              @click="step = 'email'"
+            >
+              <ArrowLeftIcon data-icon="inline-start" />
+              Use a different email
+            </Button>
+          </form>
+        </CardContent>
+
+        <CardFooter class="justify-center border-t border-border/60 pt-4">
+          <p class="wire-label text-center">Proxy · policy · tokens</p>
+        </CardFooter>
+      </Card>
     </div>
   </div>
 </template>
-
-<style scoped>
-.login-page {
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 2rem;
-  background: var(--bg, #0f1115);
-}
-.login-card {
-  width: min(420px, 100%);
-  padding: 2rem;
-}
-.login-brand {
-  display: flex;
-  gap: 1rem;
-  align-items: center;
-  margin-bottom: 1.5rem;
-}
-.logo-mark {
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: 0.5rem;
-  background: var(--accent, #5b8def);
-  color: #fff;
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-}
-.stack { display: flex; flex-direction: column; gap: 1rem; }
-.field { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.875rem; }
-.field input {
-  padding: 0.6rem 0.75rem;
-  border-radius: 0.4rem;
-  border: 1px solid var(--border, #2a2f3a);
-  background: var(--surface-2, #161a22);
-  color: inherit;
-}
-.muted { font-size: 0.9rem; opacity: 0.85; }
-.invite-hint { font-size: 0.8rem; opacity: 0.8; margin: 0.35rem 0 0; max-width: 22rem; line-height: 1.35; }
-.alert-info {
-  background: rgba(91, 141, 239, 0.12);
-  border: 1px solid rgba(91, 141, 239, 0.35);
-  padding: 0.75rem;
-  border-radius: 0.4rem;
-  font-size: 0.875rem;
-}
-</style>

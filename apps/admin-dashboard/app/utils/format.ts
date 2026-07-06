@@ -11,10 +11,18 @@ export function formatDate(value?: string | null): string {
   }
 }
 
-export function statusBadgeClass(status?: string): string {
+/** Map status strings to shadcn Badge variants. */
+export function statusBadgeVariant(status?: string): 'default' | 'secondary' | 'destructive' | 'outline' {
   const s = (status || '').toLowerCase()
-  if (s === 'active' || s === 'ok') return 'badge badge-success'
-  if (s === 'disabled' || s === 'revoked') return 'badge badge-danger'
-  if (s === 'pending') return 'badge badge-warning'
-  return 'badge badge-muted'
+  if (s === 'active' || s === 'ok') return 'default'
+  if (s === 'disabled' || s === 'revoked') return 'destructive'
+  if (s === 'pending') return 'outline'
+  return 'secondary'
+}
+
+export function roleBadgeVariant(role?: string): 'default' | 'secondary' | 'outline' {
+  const r = (role || '').toLowerCase()
+  if (r === 'owner') return 'default'
+  if (r === 'admin') return 'outline'
+  return 'secondary'
 }

@@ -1,4 +1,11 @@
 <script setup lang="ts">
+import {
+  AlertTriangleIcon,
+  CopyIcon,
+  KeyRoundIcon,
+  Trash2Icon,
+} from '@lucide/vue'
+import { toast } from 'vue-sonner'
 import type {
   CachePolicy,
   CollectionPolicy,
@@ -9,27 +16,70 @@ import type {
   Tenant,
   Token,
 } from '~/types/accelerator'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Badge } from '@/components/ui/badge'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
+import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Spinner } from '@/components/ui/spinner'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 const route = useRoute()
 const api = useAcceleratorApi()
 const tenantId = computed(() => String(route.params.id || ''))
 
-const tab = ref<'overview' | 'backend' | 'cache' | 'tokens' | 'members' | 'invalidate' | 'savings' | 'danger'>('overview')
-const tabs = computed(() => {
-  const base = [
-    { id: 'overview' as const, label: 'Overview' },
-    { id: 'backend' as const, label: 'Connection' },
-    { id: 'cache' as const, label: 'Caching' },
-    { id: 'tokens' as const, label: 'Tokens' },
-    { id: 'members' as const, label: 'Members' },
-    { id: 'invalidate' as const, label: 'Invalidate' },
-    { id: 'savings' as const, label: 'Savings' },
-  ]
-  if (canDelete.value) {
-    base.push({ id: 'danger' as const, label: 'Danger zone' })
-  }
-  return base
-})
+const tab = ref('overview')
 
 const myRole = computed(() => tenant.value?.role || 'member')
 const canManage = computed(() => tenant.value?.canManage === true || myRole.value === 'owner' || myRole.value === 'admin')
@@ -42,45 +92,40 @@ const tokens = ref<Token[]>([])
 const savings = ref<SavingsReport | null>(null)
 const loading = ref(true)
 const error = ref('')
-const flash = ref<{ type: 'success' | 'error' | 'info' | 'warning', msg: string } | null>(null)
 
-// Backend form
 const backendUri = ref('')
 const backendBusy = ref(false)
 
-// Cache defaults
 const defaultTtl = ref(60)
 const defaultsBusy = ref(false)
 
-// Per-collection TTL overrides (real collection name, not *_cache)
 const newCollKey = ref('')
 const newCollTtl = ref(60)
 const newCollMaxBytes = ref<number | undefined>(undefined)
 const collBusy = ref(false)
 
-// Tokens
 const tokenDesc = ref('')
 const tokenBusy = ref(false)
 const issuedToken = ref<IssueTokenResponse | null>(null)
 
-// Invalidate
 const invDb = ref('')
 const invColl = ref('')
 const invTags = ref('')
 const invBusy = ref(false)
 
-// Members
 const members = ref<OrganizationMember[]>([])
 const pendingInvites = ref<OrganizationInvite[]>([])
 const inviteEmail = ref('')
-const inviteRole = ref<'member' | 'admin' | 'owner'>('member')
+const inviteRole = ref('member')
 const membersBusy = ref(false)
 
-// Delete org (owner only)
 const deleteStep = ref<'warn' | 'code'>('warn')
 const deleteCode = ref('')
 const deleteBusy = ref(false)
 const deleteAck = ref(false)
+
+const revokeTarget = ref<string | null>(null)
+const revokeOpen = ref(false)
 
 const inviteRoleOptions = computed(() => {
   if (myRole.value === 'owner') {
@@ -95,13 +140,6 @@ const inviteRoleOptions = computed(() => {
     { value: 'admin', label: 'admin (manage settings)' },
   ]
 })
-
-function showFlash(type: 'success' | 'error' | 'info' | 'warning', msg: string) {
-  flash.value = { type, msg }
-  setTimeout(() => {
-    if (flash.value?.msg === msg) flash.value = null
-  }, 6000)
-}
 
 async function loadTenant() {
   loading.value = true
@@ -124,7 +162,7 @@ async function loadPolicy() {
     defaultTtl.value = policy.value.defaultTtlSeconds ?? 60
   }
   catch (e) {
-    showFlash('error', `Policy: ${api.apiErrorMessage(e)}`)
+    toast.error(`Policy: ${api.apiErrorMessage(e)}`)
   }
 }
 
@@ -133,7 +171,7 @@ async function loadTokens() {
     tokens.value = await api.listTokens(tenantId.value)
   }
   catch (e) {
-    showFlash('error', `Tokens: ${api.apiErrorMessage(e)}`)
+    toast.error(`Tokens: ${api.apiErrorMessage(e)}`)
   }
 }
 
@@ -142,7 +180,7 @@ async function loadSavings() {
     savings.value = await api.getSavings(tenantId.value)
   }
   catch (e) {
-    showFlash('error', `Savings: ${api.apiErrorMessage(e)}`)
+    toast.error(`Savings: ${api.apiErrorMessage(e)}`)
   }
 }
 
@@ -156,7 +194,7 @@ async function loadMembers() {
     pendingInvites.value = inv
   }
   catch (e) {
-    showFlash('error', `Members: ${api.apiErrorMessage(e)}`)
+    toast.error(`Members: ${api.apiErrorMessage(e)}`)
   }
 }
 
@@ -164,13 +202,13 @@ async function sendInvite() {
   if (!inviteEmail.value.trim()) return
   membersBusy.value = true
   try {
-    await api.inviteMember(tenantId.value, inviteEmail.value.trim(), inviteRole.value)
+    await api.inviteMember(tenantId.value, inviteEmail.value.trim(), inviteRole.value as 'member' | 'admin' | 'owner')
     inviteEmail.value = ''
-    showFlash('success', 'Invite sent')
+    toast.success('Invite sent')
     await loadMembers()
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     membersBusy.value = false
@@ -181,11 +219,11 @@ async function onRemoveMember(userId: string) {
   membersBusy.value = true
   try {
     await api.removeMember(tenantId.value, userId)
-    showFlash('success', 'Member removed')
+    toast.success('Member removed')
     await loadMembers()
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     membersBusy.value = false
@@ -196,11 +234,11 @@ async function onRevokeInvite(inviteId: string) {
   membersBusy.value = true
   try {
     await api.revokeInvite(tenantId.value, inviteId)
-    showFlash('success', 'Invite revoked')
+    toast.success('Invite revoked')
     await loadMembers()
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     membersBusy.value = false
@@ -216,24 +254,22 @@ watch(tab, async (t) => {
 
 onMounted(async () => {
   await loadTenant()
-  // Prefetch policy so overview shows active default TTL
   await loadPolicy()
 })
 
-// —— Backend ——
 async function saveBackend() {
   if (!backendUri.value.trim()) {
-    showFlash('error', 'MongoDB URI is required')
+    toast.error('MongoDB URI is required')
     return
   }
   backendBusy.value = true
   try {
     await api.setBackend(tenantId.value, backendUri.value.trim())
     backendUri.value = ''
-    showFlash('success', 'Backend URI stored (encrypted at rest). Never shown again via API.')
+    toast.success('Backend URI stored (encrypted at rest). Never shown again via API.')
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     backendBusy.value = false
@@ -244,31 +280,30 @@ async function testBackend() {
   backendBusy.value = true
   try {
     const res = await api.testBackend(tenantId.value)
-    showFlash('success', res.status || 'Connection successful')
+    toast.success(res.status || 'Connection successful')
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     backendBusy.value = false
   }
 }
 
-// —— Cache ——
 async function saveDefaults() {
   defaultsBusy.value = true
   try {
     const ttl = Number(defaultTtl.value)
     if (!ttl || ttl < 1) {
-      showFlash('error', 'Default TTL must be at least 1 second')
+      toast.error('Default TTL must be at least 1 second')
       return
     }
     await api.setDefaultTtl(tenantId.value, ttl)
     await loadPolicy()
-    showFlash('success', `Default cache TTL set to ${ttl}s for all _cache queries`)
+    toast.success(`Default cache TTL set to ${ttl}s for all _cache queries`)
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     defaultsBusy.value = false
@@ -280,10 +315,10 @@ async function upsertCollection(key: string, pol: CollectionPolicy) {
   try {
     await api.setCollectionPolicy(tenantId.value, key, pol)
     await loadPolicy()
-    showFlash('success', `Override saved for ${key} (applies when clients use ${key.split('.').pop()}_cache)`)
+    toast.success(`Override saved for ${key} (applies when clients use ${key.split('.').pop()}_cache)`)
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     collBusy.value = false
@@ -293,11 +328,11 @@ async function upsertCollection(key: string, pol: CollectionPolicy) {
 async function addCollection() {
   const key = newCollKey.value.trim()
   if (!key || !key.includes('.')) {
-    showFlash('error', 'Use real db.collection format (e.g. mydb.orders), not mydb.orders_cache')
+    toast.error('Use real db.collection format (e.g. mydb.orders), not mydb.orders_cache')
     return
   }
   if (key.endsWith('_cache')) {
-    showFlash('error', 'Use the real collection name (without _cache). Clients append _cache in queries.')
+    toast.error('Use the real collection name (without _cache). Clients append _cache in queries.')
     return
   }
   const ttl = Number(newCollTtl.value) || Number(defaultTtl.value) || 60
@@ -314,15 +349,14 @@ async function addCollection() {
 }
 
 async function removeCollectionOverride(key: string) {
-  // API has no delete; TTL 0 means inherit organization default in the proxy.
   collBusy.value = true
   try {
     await api.setCollectionPolicy(tenantId.value, key, { enabled: true, ttlSeconds: 0 })
     await loadPolicy()
-    showFlash('info', `${key} will inherit the organization default TTL (${defaultTtl.value}s)`)
+    toast.message(`${key} will inherit the organization default TTL (${defaultTtl.value}s)`)
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     collBusy.value = false
@@ -339,7 +373,6 @@ function effectiveTtl(row: { ttlSeconds?: number }) {
   return policy.value?.defaultTtlSeconds ?? defaultTtl.value ?? 60
 }
 
-// —— Tokens ——
 async function issueToken() {
   tokenBusy.value = true
   issuedToken.value = null
@@ -347,36 +380,44 @@ async function issueToken() {
     issuedToken.value = await api.issueToken(tenantId.value, tokenDesc.value.trim() || undefined)
     tokenDesc.value = ''
     await loadTokens()
-    showFlash('warning', 'Copy the raw token now — it is only shown once.')
+    toast.warning('Copy the raw token now — it is only shown once.')
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     tokenBusy.value = false
   }
 }
 
-async function revokeToken(tokenId: string) {
-  if (!confirm('Revoke this token? Clients using it will fail auth immediately.')) return
+function confirmRevoke(tokenId: string) {
+  revokeTarget.value = tokenId
+  revokeOpen.value = true
+}
+
+async function revokeToken() {
+  if (!revokeTarget.value) return
   try {
-    await api.revokeToken(tokenId)
+    await api.revokeToken(revokeTarget.value)
     await loadTokens()
-    showFlash('success', 'Token revoked')
+    toast.success('Token revoked')
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
+  }
+  finally {
+    revokeOpen.value = false
+    revokeTarget.value = null
   }
 }
 
 function copyText(text: string) {
-  navigator.clipboard?.writeText(text).then(() => showFlash('info', 'Copied to clipboard'))
+  navigator.clipboard?.writeText(text).then(() => toast.message('Copied to clipboard'))
 }
 
-// —— Invalidate ——
 async function runInvalidate() {
   if (!canManage.value) {
-    showFlash('error', 'Only admins and owners can invalidate cache')
+    toast.error('Only admins and owners can invalidate cache')
     return
   }
   invBusy.value = true
@@ -390,30 +431,29 @@ async function runInvalidate() {
       coll: invColl.value.trim() || undefined,
       tags: tags.length ? tags : undefined,
     })
-    showFlash('success', `Invalidated (tenant=${res.tenantId}${res.db ? `, db=${res.db}` : ''}${res.coll ? `, coll=${res.coll}` : ''})`)
+    toast.success(`Invalidated (tenant=${res.tenantId}${res.db ? `, db=${res.db}` : ''}${res.coll ? `, coll=${res.coll}` : ''})`)
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     invBusy.value = false
   }
 }
 
-// —— Delete organization (owner) ——
 async function sendDeleteCode() {
   if (!deleteAck.value) {
-    showFlash('error', 'Confirm that you understand data will be permanently lost')
+    toast.error('Confirm that you understand data will be permanently lost')
     return
   }
   deleteBusy.value = true
   try {
     const res = await api.requestDeleteOrg(tenantId.value)
     deleteStep.value = 'code'
-    showFlash('info', (res as { message?: string }).message || 'Verification code sent to your email')
+    toast.message((res as { message?: string }).message || 'Verification code sent to your email')
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     deleteBusy.value = false
@@ -422,17 +462,17 @@ async function sendDeleteCode() {
 
 async function confirmDeleteOrg() {
   if (!deleteCode.value.trim()) {
-    showFlash('error', 'Enter the verification code from your email')
+    toast.error('Enter the verification code from your email')
     return
   }
   deleteBusy.value = true
   try {
     await api.confirmDeleteOrg(tenantId.value, deleteCode.value.trim())
-    showFlash('success', 'Organization deleted')
+    toast.success('Organization deleted')
     await navigateTo('/')
   }
   catch (e) {
-    showFlash('error', api.apiErrorMessage(e))
+    toast.error(api.apiErrorMessage(e))
   }
   finally {
     deleteBusy.value = false
@@ -441,563 +481,795 @@ async function confirmDeleteOrg() {
 </script>
 
 <template>
-  <div class="page">
-    <div class="breadcrumb">
-      <NuxtLink to="/">Organizations</NuxtLink>
-      <span>/</span>
-      <span class="mono">{{ tenantId }}</span>
+  <div class="page-shell flex flex-col gap-6">
+    <div class="flex flex-col gap-3">
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink as-child>
+              <NuxtLink to="/">Organizations</NuxtLink>
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage class="font-mono text-xs">{{ tenantId }}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div class="flex flex-col gap-1">
+          <p class="wire-label">Organization</p>
+          <h1 class="text-2xl font-semibold tracking-tight">
+            {{ tenant?.name || tenantId }}
+          </h1>
+          <p class="font-mono text-xs text-muted-foreground">{{ tenantId }}</p>
+        </div>
+        <div v-if="tenant" class="flex flex-wrap items-center gap-2">
+          <Badge v-if="tenant.role" :variant="roleBadgeVariant(tenant.role)">
+            your role: {{ tenant.role }}
+          </Badge>
+          <Badge :variant="statusBadgeVariant(tenant.status)">{{ tenant.status }}</Badge>
+        </div>
+      </div>
     </div>
 
-    <div class="page-header">
-      <div>
-        <h2>{{ tenant?.name || tenantId }}</h2>
-        <p class="subtitle">Organization · <span class="mono">{{ tenantId }}</span></p>
-      </div>
-      <div class="header-badges">
-        <span v-if="tenant?.role" class="badge role-badge">your role: {{ tenant.role }}</span>
-        <span v-if="tenant" :class="statusBadgeClass(tenant.status)">{{ tenant.status }}</span>
-      </div>
-    </div>
+    <Alert v-if="error" variant="destructive">
+      <AlertTitle>Could not load organization</AlertTitle>
+      <AlertDescription>{{ error }}</AlertDescription>
+    </Alert>
 
-    <div v-if="flash" class="alert" :class="`alert-${flash.type}`">{{ flash.msg }}</div>
-    <div v-if="error" class="alert alert-error">{{ error }}</div>
-    <div v-if="loading" class="loading">Loading tenant…</div>
+    <div v-if="loading" class="flex flex-col gap-3">
+      <Skeleton class="h-10 w-full" />
+      <Skeleton class="h-40 w-full" />
+    </div>
 
     <template v-else-if="tenant">
-      <div v-if="isReadOnly" class="alert alert-info role-banner">
-        You are a <strong>member</strong> — view-only access. Admins manage settings; only an <strong>owner</strong> can delete the organization.
-      </div>
-      <div v-else-if="myRole === 'admin'" class="alert alert-info role-banner">
-        You are an <strong>admin</strong> — you can manage backends, caching, tokens, and members. Only an <strong>owner</strong> can delete this organization.
-      </div>
+      <Alert v-if="isReadOnly">
+        <AlertTitle>View-only access</AlertTitle>
+        <AlertDescription>
+          You are a <strong>member</strong> — view-only access. Admins manage settings; only an
+          <strong>owner</strong> can delete the organization.
+        </AlertDescription>
+      </Alert>
+      <Alert v-else-if="myRole === 'admin'">
+        <AlertTitle>Admin access</AlertTitle>
+        <AlertDescription>
+          You can manage backends, caching, tokens, and members. Only an
+          <strong>owner</strong> can delete this organization.
+        </AlertDescription>
+      </Alert>
 
-      <div class="tabs">
-        <button
-          v-for="t in tabs"
-          :key="t.id"
-          type="button"
-          class="tab"
-          :class="{ active: tab === t.id, 'tab-danger': t.id === 'danger' }"
-          @click="tab = t.id"
-        >
-          {{ t.label }}
-        </button>
-      </div>
-
-      <!-- Overview -->
-      <div v-if="tab === 'overview'" class="stats-row">
-        <div class="stat-card">
-          <div class="stat-label">Tenant ID</div>
-          <div class="stat-value" style="font-size: 1rem; font-family: var(--font-mono);">{{ tenant.id }}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Status</div>
-          <div class="stat-value" style="font-size: 1.1rem;">{{ tenant.status }}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Created</div>
-          <div class="stat-value" style="font-size: 0.95rem;">{{ formatDate(tenant.created_at) }}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Updated</div>
-          <div class="stat-value" style="font-size: 0.95rem;">{{ formatDate(tenant.updated_at) }}</div>
-        </div>
-      </div>
-
-      <div v-if="tab === 'overview'" class="card">
-        <h3 class="card-title">How caching works</h3>
-        <p class="card-desc">
-          Clients opt in <strong>per query</strong> by using a collection name that ends with
-          <code class="mono">_cache</code>. The proxy strips that suffix, reads the real collection,
-          and serves results from Redis with a default TTL of
-          <strong>{{ policy?.defaultTtlSeconds ?? defaultTtl }} seconds</strong>
-          (override under <strong>Caching</strong>). Without the suffix, every query hits MongoDB.
-        </p>
-        <ul class="help-list">
-          <li><code class="mono">db.orders_cache.find(…)</code> — cached (real collection: <code class="mono">orders</code>)</li>
-          <li><code class="mono">db.orders.find(…)</code> — always bypasses cache</li>
-          <li>Entries expire by <strong>TTL</strong> (default 60s); use <strong>Invalidate</strong> for a manual flush — writes do not clear cache automatically</li>
-        </ul>
-        <div class="form-actions">
-          <button class="btn btn-secondary" type="button" @click="tab = 'backend'">{{ canManage ? 'Configure backend' : 'View connection' }}</button>
-          <button class="btn btn-secondary" type="button" @click="tab = 'cache'">{{ canManage ? 'Configure caching' : 'View caching' }}</button>
-          <button v-if="canManage" class="btn btn-secondary" type="button" @click="tab = 'tokens'">Issue token</button>
-          <button class="btn btn-secondary" type="button" @click="tab = 'members'">{{ canManage ? 'Manage members' : 'View members' }}</button>
-          <button v-if="canManage" class="btn btn-secondary" type="button" @click="tab = 'invalidate'">Invalidate cache</button>
-          <button v-if="canDelete" class="btn btn-danger" type="button" @click="tab = 'danger'">Delete organization</button>
-        </div>
-      </div>
-
-      <!-- Backend / Connection -->
-      <div v-if="tab === 'backend'" class="card">
-        <h3 class="card-title">MongoDB backend connection</h3>
-        <p class="card-desc">
-          Store this organization's real MongoDB URI. It is encrypted at rest with
-          <code class="mono">NANCE_MASTER_KEY</code> and never returned by the API.
-          <span v-if="isReadOnly"> Members can test connectivity but cannot change the URI.</span>
-        </p>
-        <div class="form-row">
-          <label for="backend-uri">Connection URI</label>
-          <input
-            id="backend-uri"
-            v-model="backendUri"
-            class="mono"
-            type="password"
-            placeholder="mongodb://user:pass@host:27017/db?…"
-            autocomplete="off"
-            :disabled="isReadOnly"
+      <Tabs v-model="tab" class="w-full flex-col gap-4">
+        <TabsList class="h-auto w-full flex-wrap justify-start gap-1 bg-muted/50 p-1">
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="backend">Connection</TabsTrigger>
+          <TabsTrigger value="cache">Caching</TabsTrigger>
+          <TabsTrigger value="tokens">Tokens</TabsTrigger>
+          <TabsTrigger value="members">Members</TabsTrigger>
+          <TabsTrigger value="invalidate">Invalidate</TabsTrigger>
+          <TabsTrigger value="savings">Savings</TabsTrigger>
+          <TabsTrigger
+            v-if="canDelete"
+            value="danger"
+            class="text-destructive data-active:text-destructive"
           >
-          <span class="hint">Paste a full MongoDB connection string. Leave blank and use Test if already configured.</span>
-        </div>
-        <div class="form-actions">
-          <button v-if="canManage" class="btn btn-primary" type="button" :disabled="backendBusy" @click="saveBackend">
-            {{ backendBusy ? 'Saving…' : 'Save encrypted URI' }}
-          </button>
-          <button class="btn btn-secondary" type="button" :disabled="backendBusy" @click="testBackend">
-            Test connection
-          </button>
-        </div>
-      </div>
+            Danger zone
+          </TabsTrigger>
+        </TabsList>
 
-      <!-- Caching -->
-      <template v-if="tab === 'cache'">
-        <div class="card callout-card">
-          <h3 class="card-title">Opt-in with <code class="mono">_cache</code></h3>
-          <p class="card-desc" style="margin-bottom: 0.75rem;">
-            Every collection is eligible for caching. Developers choose per query by appending
-            <code class="mono">_cache</code> to the collection name. No policy toggle is required to turn caching on.
-          </p>
-          <div class="code-examples">
-            <div class="code-example">
-              <span class="badge badge-success">cached</span>
-              <code class="mono">db.orders_cache.find(&#123; status: "open" &#125;)</code>
-              <span class="text-dim text-sm">→ real <code class="mono">orders</code> · TTL {{ policy?.defaultTtlSeconds ?? defaultTtl }}s unless overridden</span>
-            </div>
-            <div class="code-example">
-              <span class="badge badge-muted">bypass</span>
-              <code class="mono">db.orders.find(&#123; status: "open" &#125;)</code>
-              <span class="text-dim text-sm">→ always MongoDB, never Redis</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <h3 class="card-title">Default TTL</h3>
-          <p class="card-desc">
-            Applied to <strong>all</strong> <code class="mono">*_cache</code> queries for this organization
-            unless a per-collection override is set below. Platform default is <strong>60 seconds</strong>.
-          </p>
-          <div class="inline-form">
-            <div class="form-row">
-              <label for="default-ttl">Default TTL (seconds)</label>
-              <input id="default-ttl" v-model.number="defaultTtl" type="number" min="1" step="1" :disabled="isReadOnly">
-              <span class="hint">Example: 60 caches results for one minute after each miss.</span>
-            </div>
-            <button
-              v-if="canManage"
-              class="btn btn-primary"
-              type="button"
-              :disabled="defaultsBusy || isReadOnly"
-              @click="saveDefaults"
-            >
-              {{ defaultsBusy ? 'Saving…' : 'Save default TTL' }}
-            </button>
-            <p v-else class="text-sm text-muted">Only admins and owners can change TTL settings.</p>
-          </div>
-          <p v-if="policy" class="text-dim text-sm mt-2">
-            Active default: <strong>{{ policy.defaultTtlSeconds }}s</strong>
-            · Cache key version: {{ policy.cacheKeyVersion }}
-            · Updated {{ formatDate(policy.updatedAt) }}
-          </p>
-        </div>
-
-        <div class="card">
-          <h3 class="card-title">Per-collection overrides</h3>
-          <p class="card-desc">
-            Optional. Use the <strong>real</strong> collection name (<code class="mono">db.orders</code>, not
-            <code class="mono">db.orders_cache</code>) to set a different TTL or max cached result size for that namespace.
-            Leave empty to use the organization default ({{ policy?.defaultTtlSeconds ?? defaultTtl }}s) for every collection.
-          </p>
-
-          <div v-if="!collectionEntries.length" class="empty-state" style="padding: 1.5rem;">
-            <p><strong>No overrides</strong> — all <code class="mono">*_cache</code> queries use the default TTL above.</p>
-            <p class="text-sm text-muted">Add an override only when a hot collection needs a shorter or longer TTL.</p>
+        <!-- Overview -->
+        <TabsContent value="overview" class="flex flex-col gap-4">
+          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Card size="sm">
+              <CardHeader class="pb-1">
+                <p class="wire-label">Tenant ID</p>
+              </CardHeader>
+              <CardContent>
+                <p class="truncate font-mono text-sm font-medium">{{ tenant.id }}</p>
+              </CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader class="pb-1">
+                <p class="wire-label">Status</p>
+              </CardHeader>
+              <CardContent>
+                <p class="text-sm font-medium capitalize">{{ tenant.status }}</p>
+              </CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader class="pb-1">
+                <p class="wire-label">Created</p>
+              </CardHeader>
+              <CardContent>
+                <p class="text-sm font-medium">{{ formatDate(tenant.created_at) }}</p>
+              </CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader class="pb-1">
+                <p class="wire-label">Updated</p>
+              </CardHeader>
+              <CardContent>
+                <p class="text-sm font-medium">{{ formatDate(tenant.updated_at) }}</p>
+              </CardContent>
+            </Card>
           </div>
 
-          <div v-else class="table-wrap mb-2">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Real collection</th>
-                  <th>Client uses</th>
-                  <th>TTL (s)</th>
-                  <th>Max result bytes</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in collectionEntries" :key="row.key">
-                  <td class="mono">{{ row.key }}</td>
-                  <td class="mono text-sm">{{ row.key }}_cache</td>
-                  <td>
-                    <strong>{{ effectiveTtl(row) }}</strong>
-                    <span v-if="!row.ttlSeconds || row.ttlSeconds <= 0" class="text-dim text-sm"> (default)</span>
-                  </td>
-                  <td class="text-muted">{{ row.maxResultBytes ?? 'default (1 MiB)' }}</td>
-                  <td>
-                    <button
-                      class="btn btn-ghost btn-sm"
-                      type="button"
-                      :disabled="collBusy"
-                      @click="removeCollectionOverride(row.key)"
-                    >
-                      Use default TTL
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>How caching works</CardTitle>
+              <CardDescription>
+                Clients opt in <strong>per query</strong> by using a collection name that ends with
+                <code class="font-mono text-xs">_cache</code>. The proxy strips that suffix, reads the real collection,
+                and serves results from Redis with a default TTL of
+                <strong>{{ policy?.defaultTtlSeconds ?? defaultTtl }} seconds</strong>
+                (override under Caching). Without the suffix, every query hits MongoDB.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ul class="flex flex-col gap-2 text-sm text-muted-foreground">
+                <li>
+                  <code class="font-mono text-xs text-foreground">db.orders_cache.find(…)</code>
+                  — cached (real collection: <code class="font-mono text-xs">orders</code>)
+                </li>
+                <li>
+                  <code class="font-mono text-xs text-foreground">db.orders.find(…)</code>
+                  — always bypasses cache
+                </li>
+                <li>
+                  Entries expire by <strong class="text-foreground">TTL</strong> (default 60s); use
+                  <strong class="text-foreground">Invalidate</strong> for a manual flush — writes do not clear cache automatically
+                </li>
+              </ul>
+            </CardContent>
+            <CardFooter class="flex flex-wrap gap-2 border-t border-border/60 pt-4">
+              <Button variant="outline" size="sm" @click="tab = 'backend'">
+                {{ canManage ? 'Configure backend' : 'View connection' }}
+              </Button>
+              <Button variant="outline" size="sm" @click="tab = 'cache'">
+                {{ canManage ? 'Configure caching' : 'View caching' }}
+              </Button>
+              <Button v-if="canManage" variant="outline" size="sm" @click="tab = 'tokens'">
+                Issue token
+              </Button>
+              <Button variant="outline" size="sm" @click="tab = 'members'">
+                {{ canManage ? 'Manage members' : 'View members' }}
+              </Button>
+              <Button v-if="canManage" variant="outline" size="sm" @click="tab = 'invalidate'">
+                Invalidate cache
+              </Button>
+              <Button v-if="canDelete" variant="destructive" size="sm" @click="tab = 'danger'">
+                Delete organization
+              </Button>
+            </CardFooter>
+          </Card>
+        </TabsContent>
 
-          <template v-if="canManage">
-            <h4 class="text-sm text-muted mb-1" style="font-weight: 600;">Add / update override</h4>
-            <div class="inline-form">
-              <div class="form-row">
-                <label>Real db.collection</label>
-                <input v-model="newCollKey" class="mono" placeholder="mydb.orders">
-                <span class="hint">Not <code class="mono">mydb.orders_cache</code></span>
+        <!-- Backend -->
+        <TabsContent value="backend">
+          <Card>
+            <CardHeader>
+              <CardTitle>MongoDB backend connection</CardTitle>
+              <CardDescription>
+                Store this organization's real MongoDB URI. It is encrypted at rest with
+                <code class="font-mono text-xs">NANCE_MASTER_KEY</code> and never returned by the API.
+                <span v-if="isReadOnly"> Members can test connectivity but cannot change the URI.</span>
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FieldGroup>
+                <Field>
+                  <FieldLabel for="backend-uri">Connection URI</FieldLabel>
+                  <Input
+                    id="backend-uri"
+                    v-model="backendUri"
+                    class="font-mono"
+                    type="password"
+                    placeholder="mongodb://user:pass@host:27017/db?…"
+                    autocomplete="off"
+                    :disabled="isReadOnly || backendBusy"
+                  />
+                  <FieldDescription>
+                    Paste a full MongoDB connection string. Leave blank and use Test if already configured.
+                  </FieldDescription>
+                </Field>
+              </FieldGroup>
+            </CardContent>
+            <CardFooter class="flex flex-wrap gap-2 border-t border-border/60 pt-4">
+              <Button v-if="canManage" :disabled="backendBusy" @click="saveBackend">
+                <Spinner v-if="backendBusy" data-icon="inline-start" />
+                {{ backendBusy ? 'Working…' : 'Save encrypted URI' }}
+              </Button>
+              <Button variant="outline" :disabled="backendBusy" @click="testBackend">
+                Test connection
+              </Button>
+            </CardFooter>
+          </Card>
+        </TabsContent>
+
+        <!-- Caching -->
+        <TabsContent value="cache" class="flex flex-col gap-4">
+          <Card class="border-primary/25 bg-primary/5">
+            <CardHeader>
+              <CardTitle>
+                Opt-in with <code class="font-mono text-sm">_cache</code>
+              </CardTitle>
+              <CardDescription>
+                Every collection is eligible for caching. Developers choose per query by appending
+                <code class="font-mono text-xs">_cache</code> to the collection name. No policy toggle is required to turn caching on.
+              </CardDescription>
+            </CardHeader>
+            <CardContent class="flex flex-col gap-2">
+              <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border/80 bg-background/60 px-3 py-2">
+                <Badge>cached</Badge>
+                <code class="font-mono text-xs">db.orders_cache.find(&#123; status: "open" &#125;)</code>
+                <span class="text-xs text-muted-foreground">
+                  → real <code class="font-mono">orders</code> · TTL {{ policy?.defaultTtlSeconds ?? defaultTtl }}s unless overridden
+                </span>
               </div>
-              <div class="form-row">
-                <label>TTL (s)</label>
-                <input v-model.number="newCollTtl" type="number" min="1" style="max-width: 100px;" :placeholder="String(defaultTtl)">
+              <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border/80 bg-background/60 px-3 py-2">
+                <Badge variant="secondary">bypass</Badge>
+                <code class="font-mono text-xs">db.orders.find(&#123; status: "open" &#125;)</code>
+                <span class="text-xs text-muted-foreground">→ always MongoDB, never Redis</span>
               </div>
-              <div class="form-row">
-                <label>Max bytes (optional)</label>
-                <input v-model.number="newCollMaxBytes" type="number" min="1" style="max-width: 120px;" placeholder="1048576">
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Default TTL</CardTitle>
+              <CardDescription>
+                Applied to <strong>all</strong> <code class="font-mono text-xs">*_cache</code> queries for this organization
+                unless a per-collection override is set below. Platform default is <strong>60 seconds</strong>.
+              </CardDescription>
+            </CardHeader>
+            <CardContent class="flex flex-col gap-4">
+              <div class="grid gap-3 sm:grid-cols-[minmax(0,16rem)_auto] sm:items-end">
+                <Field class="gap-1.5">
+                  <FieldLabel for="default-ttl">Default TTL (seconds)</FieldLabel>
+                  <Input
+                    id="default-ttl"
+                    v-model.number="defaultTtl"
+                    type="number"
+                    min="1"
+                    step="1"
+                    :disabled="isReadOnly || defaultsBusy"
+                  />
+                </Field>
+                <Button
+                  v-if="canManage"
+                  class="w-full sm:w-auto"
+                  :disabled="defaultsBusy || isReadOnly"
+                  @click="saveDefaults"
+                >
+                  <Spinner v-if="defaultsBusy" data-icon="inline-start" />
+                  {{ defaultsBusy ? 'Saving…' : 'Save default TTL' }}
+                </Button>
               </div>
-              <button class="btn btn-primary" type="button" :disabled="collBusy" @click="addCollection">
-                Save override
-              </button>
-            </div>
-          </template>
-        </div>
-      </template>
+              <FieldDescription class="!mt-0">
+                Example: 60 caches results for one minute after each miss.
+              </FieldDescription>
+              <p v-if="!canManage" class="text-sm text-muted-foreground">
+                Only admins and owners can change TTL settings.
+              </p>
+              <p v-if="policy" class="text-xs text-muted-foreground">
+                Active default: <strong class="text-foreground">{{ policy.defaultTtlSeconds }}s</strong>
+                · Cache key version: {{ policy.cacheKeyVersion }}
+                · Updated {{ formatDate(policy.updatedAt) }}
+              </p>
+            </CardContent>
+          </Card>
 
-      <!-- Tokens -->
-      <template v-if="tab === 'tokens'">
-        <div v-if="canManage" class="card">
-          <h3 class="card-title">Issue access token</h3>
-          <p class="card-desc">
-            Tokens authenticate clients to the data-plane proxy (username = tenant ID, password = raw token,
-            <code class="mono">authMechanism=PLAIN</code>). The raw secret is returned only once.
-          </p>
-          <div class="inline-form">
-            <div class="form-row">
-              <label>Description (optional)</label>
-              <input v-model="tokenDesc" placeholder="ci-bot, local-dev, …">
-            </div>
-            <button class="btn btn-primary" type="button" :disabled="tokenBusy" @click="issueToken">
-              {{ tokenBusy ? 'Issuing…' : 'Issue token' }}
-            </button>
-          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>Per-collection overrides</CardTitle>
+              <CardDescription>
+                Optional. Use the <strong>real</strong> collection name
+                (<code class="font-mono text-xs">db.orders</code>, not
+                <code class="font-mono text-xs">db.orders_cache</code>) to set a different TTL or max cached result size.
+                Leave empty to use the organization default ({{ policy?.defaultTtlSeconds ?? defaultTtl }}s).
+              </CardDescription>
+            </CardHeader>
+            <CardContent class="flex flex-col gap-4">
+              <Empty v-if="!collectionEntries.length" class="border border-dashed py-8">
+                <EmptyHeader>
+                  <EmptyTitle>No overrides</EmptyTitle>
+                  <EmptyDescription>
+                    All <code class="font-mono text-xs">*_cache</code> queries use the default TTL above.
+                    Add an override only when a hot collection needs a shorter or longer TTL.
+                  </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
 
-          <div v-if="issuedToken" class="token-reveal">
-            <div class="label">Raw token — copy now, shown only once</div>
-            <code>{{ issuedToken.rawToken }}</code>
-            <div class="form-actions mt-1">
-              <button class="btn btn-secondary btn-sm" type="button" @click="copyText(issuedToken!.rawToken)">
-                Copy token
-              </button>
-              <button
-                class="btn btn-ghost btn-sm"
-                type="button"
-                @click="copyText(`mongodb://${tenantId}:${issuedToken!.rawToken}@127.0.0.1:27018/mydb?authMechanism=PLAIN&authSource=$external`)"
-              >
-                Copy sample URI
-              </button>
-            </div>
-          </div>
-        </div>
-        <div v-else class="card">
-          <p class="card-desc">Members can list tokens but only admins and owners can issue or revoke them.</p>
-        </div>
+              <div v-else class="overflow-hidden rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow class="hover:bg-transparent">
+                      <TableHead>Real collection</TableHead>
+                      <TableHead>Client uses</TableHead>
+                      <TableHead>TTL (s)</TableHead>
+                      <TableHead>Max result bytes</TableHead>
+                      <TableHead class="w-32" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow v-for="row in collectionEntries" :key="row.key">
+                      <TableCell class="font-mono text-xs">{{ row.key }}</TableCell>
+                      <TableCell class="font-mono text-xs text-muted-foreground">{{ row.key }}_cache</TableCell>
+                      <TableCell>
+                        <strong>{{ effectiveTtl(row) }}</strong>
+                        <span v-if="!row.ttlSeconds || row.ttlSeconds <= 0" class="text-xs text-muted-foreground"> (default)</span>
+                      </TableCell>
+                      <TableCell class="text-muted-foreground">
+                        {{ row.maxResultBytes ?? 'default (1 MiB)' }}
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          v-if="canManage"
+                          variant="ghost"
+                          size="sm"
+                          :disabled="collBusy"
+                          @click="removeCollectionOverride(row.key)"
+                        >
+                          Use default
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              </div>
 
-        <div class="card">
-          <h3 class="card-title">Issued tokens</h3>
-          <div v-if="!tokens.length" class="empty-state" style="padding: 1.5rem;">
-            <p>No tokens yet.</p>
-          </div>
-          <div v-else class="table-wrap">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Token ID</th>
-                  <th>Description</th>
-                  <th>Created</th>
-                  <th>Revoked</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="tok in tokens" :key="tok.id">
-                  <td class="mono text-sm">{{ tok.id }}</td>
-                  <td>{{ tok.description || '—' }}</td>
-                  <td class="text-muted text-sm">{{ formatDate(tok.created_at) }}</td>
-                  <td>
-                    <span v-if="tok.revoked_at" class="badge badge-danger">revoked</span>
-                    <span v-else class="badge badge-success">active</span>
-                  </td>
-                  <td>
-                    <button
-                      v-if="!tok.revoked_at"
-                      class="btn btn-danger btn-sm"
-                      type="button"
-                      @click="revokeToken(tok.id)"
-                    >
-                      Revoke
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </template>
-
-      <!-- Members -->
-      <div v-if="tab === 'members'" class="card">
-        <h3 class="card-title">User management</h3>
-        <p class="card-desc">
-          <strong>member</strong> — read-only.
-          <strong>admin</strong> — manage settings (not delete org).
-          <strong>owner</strong> — full control including deletion.
-          Invitees sign in with the invited email and accept from Organizations.
-        </p>
-        <template v-if="canManage">
-          <div class="grid-2" style="align-items: end;">
-            <div class="form-row">
-              <label>Email</label>
-              <input v-model="inviteEmail" type="email" placeholder="teammate@company.com">
-            </div>
-            <div class="form-row">
-              <label>Role</label>
-              <select v-model="inviteRole">
-                <option v-for="opt in inviteRoleOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button class="btn btn-primary" type="button" :disabled="membersBusy || !inviteEmail.trim()" @click="sendInvite">
-              {{ membersBusy ? 'Working…' : 'Send invite' }}
-            </button>
-          </div>
-        </template>
-        <p v-else class="text-sm text-muted">Members cannot invite or remove users.</p>
-
-        <h4 class="mt-3">Members</h4>
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Email</th>
-                <th>Name</th>
-                <th>Role</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="m in members" :key="m.userId">
-                <td>{{ m.email || m.userId }}</td>
-                <td>{{ m.name || '—' }}</td>
-                <td><span class="badge">{{ m.role }}</span></td>
-                <td>
-                  <button
-                    v-if="canManage"
-                    class="btn btn-danger btn-sm"
-                    type="button"
-                    :disabled="membersBusy"
-                    @click="onRemoveMember(m.userId)"
+              <template v-if="canManage">
+                <div class="flex flex-col gap-3 border-t border-border/60 pt-4">
+                  <p class="wire-label">Add / update override</p>
+                  <div
+                    class="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,7rem)_minmax(0,9rem)_auto] lg:items-end"
                   >
-                    Remove
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+                    <Field class="gap-1.5 sm:col-span-2 lg:col-span-1">
+                      <FieldLabel for="new-coll-key">Real db.collection</FieldLabel>
+                      <Input
+                        id="new-coll-key"
+                        v-model="newCollKey"
+                        class="font-mono"
+                        placeholder="mydb.orders"
+                        :disabled="collBusy"
+                      />
+                    </Field>
+                    <Field class="gap-1.5">
+                      <FieldLabel for="new-coll-ttl">TTL (s)</FieldLabel>
+                      <Input
+                        id="new-coll-ttl"
+                        v-model.number="newCollTtl"
+                        type="number"
+                        min="1"
+                        :placeholder="String(defaultTtl)"
+                        :disabled="collBusy"
+                      />
+                    </Field>
+                    <Field class="gap-1.5">
+                      <FieldLabel for="new-coll-max">Max bytes</FieldLabel>
+                      <Input
+                        id="new-coll-max"
+                        v-model.number="newCollMaxBytes"
+                        type="number"
+                        min="1"
+                        placeholder="1048576"
+                        :disabled="collBusy"
+                      />
+                    </Field>
+                    <Button
+                      class="w-full lg:w-auto"
+                      :disabled="collBusy"
+                      @click="addCollection"
+                    >
+                      <Spinner v-if="collBusy" data-icon="inline-start" />
+                      Save override
+                    </Button>
+                  </div>
+                  <FieldDescription class="!mt-0">
+                    Use the real collection name, not <code class="font-mono">mydb.orders_cache</code>.
+                  </FieldDescription>
+                </div>
+              </template>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-        <template v-if="pendingInvites.length && canManage">
-          <h4 class="mt-3">Pending invites</h4>
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Email</th>
-                  <th>Role</th>
-                  <th>Expires</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="inv in pendingInvites" :key="inv.id">
-                  <td>{{ inv.email }}</td>
-                  <td>{{ inv.role }}</td>
-                  <td class="text-sm text-muted">{{ inv.expires_at }}</td>
-                  <td>
-                    <button class="btn btn-ghost btn-sm" type="button" :disabled="membersBusy" @click="onRevokeInvite(inv.id)">
+        <!-- Tokens -->
+        <TabsContent value="tokens" class="flex flex-col gap-4">
+          <Card v-if="canManage">
+            <CardHeader>
+              <CardTitle>Issue access token</CardTitle>
+              <CardDescription>
+                Tokens authenticate clients to the data-plane proxy (username = tenant ID, password = raw token,
+                <code class="font-mono text-xs">authMechanism=PLAIN</code>). The raw secret is returned only once.
+              </CardDescription>
+            </CardHeader>
+            <CardContent class="flex flex-col gap-4">
+              <div class="flex flex-wrap items-end gap-3">
+                <Field class="min-w-48 flex-1">
+                  <FieldLabel>Description (optional)</FieldLabel>
+                  <Input v-model="tokenDesc" placeholder="ci-bot, local-dev, …" :disabled="tokenBusy" />
+                </Field>
+                <Button :disabled="tokenBusy" @click="issueToken">
+                  <Spinner v-if="tokenBusy" data-icon="inline-start" />
+                  {{ tokenBusy ? 'Issuing…' : 'Issue token' }}
+                </Button>
+              </div>
+
+              <div v-if="issuedToken" class="token-reveal">
+                <p class="wire-label text-amber-500">Raw token — copy now, shown only once</p>
+                <code>{{ issuedToken.rawToken }}</code>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" @click="copyText(issuedToken!.rawToken)">
+                    <CopyIcon data-icon="inline-start" />
+                    Copy token
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    @click="copyText(`mongodb://${tenantId}:${issuedToken!.rawToken}@127.0.0.1:27018/mydb?authMechanism=PLAIN&authSource=$external`)"
+                  >
+                    Copy sample URI
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Alert v-else>
+            <KeyRoundIcon />
+            <AlertTitle>Read-only for tokens</AlertTitle>
+            <AlertDescription>
+              Members can list tokens but only admins and owners can issue or revoke them.
+            </AlertDescription>
+          </Alert>
+
+          <Card class="overflow-hidden p-0">
+            <CardHeader class="border-b border-border/60 px-6 py-4">
+              <CardTitle class="text-base">Issued tokens</CardTitle>
+            </CardHeader>
+            <Empty v-if="!tokens.length" class="py-10">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <KeyRoundIcon />
+                </EmptyMedia>
+                <EmptyTitle>No tokens yet</EmptyTitle>
+                <EmptyDescription>Issue a token to authenticate clients to the proxy.</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+            <Table v-else>
+              <TableHeader>
+                <TableRow class="hover:bg-transparent">
+                  <TableHead>Token ID</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead class="w-24" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow v-for="tok in tokens" :key="tok.id">
+                  <TableCell class="font-mono text-xs">{{ tok.id }}</TableCell>
+                  <TableCell>{{ tok.description || '—' }}</TableCell>
+                  <TableCell class="text-sm text-muted-foreground">{{ formatDate(tok.created_at) }}</TableCell>
+                  <TableCell>
+                    <Badge v-if="tok.revoked_at" variant="destructive">revoked</Badge>
+                    <Badge v-else>active</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      v-if="!tok.revoked_at && canManage"
+                      variant="destructive"
+                      size="sm"
+                      @click="confirmRevoke(tok.id)"
+                    >
                       Revoke
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </template>
-      </div>
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </Card>
+        </TabsContent>
 
-      <!-- Danger zone: delete org (owner only) -->
-      <div v-if="tab === 'danger' && canDelete" class="card danger-card">
-        <h3 class="card-title">Delete organization</h3>
-        <p class="card-desc">
-          Permanently remove <strong>{{ tenant?.name }}</strong> (<code class="mono">{{ tenantId }}</code>) and
-          <strong>all related data</strong>: members, invites, backend connection, cache policies, proxy tokens, and audit history.
-          This cannot be undone. Only <strong>owners</strong> can delete an organization.
-        </p>
+        <!-- Members -->
+        <TabsContent value="members">
+          <Card>
+            <CardHeader>
+              <CardTitle>User management</CardTitle>
+              <CardDescription>
+                <strong>member</strong> — read-only.
+                <strong>admin</strong> — manage settings (not delete org).
+                <strong>owner</strong> — full control including deletion.
+                Invitees sign in with the invited email and accept from Organizations.
+              </CardDescription>
+            </CardHeader>
+            <CardContent class="flex flex-col gap-6">
+              <template v-if="canManage">
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <Field>
+                    <FieldLabel>Email</FieldLabel>
+                    <Input v-model="inviteEmail" type="email" placeholder="teammate@company.com" :disabled="membersBusy" />
+                  </Field>
+                  <Field>
+                    <FieldLabel>Role</FieldLabel>
+                    <Select v-model="inviteRole" :disabled="membersBusy">
+                      <SelectTrigger class="w-full">
+                        <SelectValue placeholder="Select role" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem
+                            v-for="opt in inviteRoleOptions"
+                            :key="opt.value"
+                            :value="opt.value"
+                          >
+                            {{ opt.label }}
+                          </SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+                <div>
+                  <Button :disabled="membersBusy || !inviteEmail.trim()" @click="sendInvite">
+                    <Spinner v-if="membersBusy" data-icon="inline-start" />
+                    {{ membersBusy ? 'Working…' : 'Send invite' }}
+                  </Button>
+                </div>
+              </template>
+              <p v-else class="text-sm text-muted-foreground">Members cannot invite or remove users.</p>
 
-        <div v-if="deleteStep === 'warn'" class="danger-steps">
-          <label class="ack-row">
-            <input v-model="deleteAck" type="checkbox">
-            <span>I understand that all organization data will be permanently lost and cannot be recovered.</span>
-          </label>
-          <button
-            class="btn btn-danger"
-            type="button"
-            :disabled="deleteBusy || !deleteAck"
-            @click="sendDeleteCode"
-          >
-            {{ deleteBusy ? 'Sending…' : 'Send verification code to my email' }}
-          </button>
-          <p class="hint">We will email a 6-digit code to your account address. Enter it on the next step to confirm deletion.</p>
-        </div>
+              <div class="flex flex-col gap-2">
+                <p class="wire-label">Members</p>
+                <div class="overflow-hidden rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow class="hover:bg-transparent">
+                        <TableHead>Email</TableHead>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Role</TableHead>
+                        <TableHead class="w-24" />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow v-for="m in members" :key="m.userId">
+                        <TableCell>{{ m.email || m.userId }}</TableCell>
+                        <TableCell>{{ m.name || '—' }}</TableCell>
+                        <TableCell>
+                          <Badge :variant="roleBadgeVariant(m.role)">{{ m.role }}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            v-if="canManage"
+                            variant="destructive"
+                            size="sm"
+                            :disabled="membersBusy"
+                            @click="onRemoveMember(m.userId)"
+                          >
+                            Remove
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
 
-        <div v-else class="danger-steps">
-          <p class="alert alert-warning">
-            Check your email for the verification code (also in control plane logs in dev). Enter it below to delete this organization forever.
-          </p>
-          <div class="form-row">
-            <label>Verification code</label>
-            <input v-model="deleteCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
-          </div>
-          <div class="form-actions">
-            <button class="btn btn-ghost" type="button" :disabled="deleteBusy" @click="deleteStep = 'warn'; deleteCode = ''">
-              Back
-            </button>
-            <button class="btn btn-danger" type="button" :disabled="deleteBusy || !deleteCode.trim()" @click="confirmDeleteOrg">
-              {{ deleteBusy ? 'Deleting…' : 'Permanently delete organization' }}
-            </button>
-          </div>
-        </div>
-      </div>
+              <div v-if="pendingInvites.length && canManage" class="flex flex-col gap-2">
+                <p class="wire-label">Pending invites</p>
+                <div class="overflow-hidden rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow class="hover:bg-transparent">
+                        <TableHead>Email</TableHead>
+                        <TableHead>Role</TableHead>
+                        <TableHead>Expires</TableHead>
+                        <TableHead class="w-24" />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow v-for="inv in pendingInvites" :key="inv.id">
+                        <TableCell>{{ inv.email }}</TableCell>
+                        <TableCell>
+                          <Badge :variant="roleBadgeVariant(inv.role)">{{ inv.role }}</Badge>
+                        </TableCell>
+                        <TableCell class="text-sm text-muted-foreground">{{ inv.expires_at }}</TableCell>
+                        <TableCell>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            :disabled="membersBusy"
+                            @click="onRevokeInvite(inv.id)"
+                          >
+                            Revoke
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-      <!-- Invalidate -->
-      <div v-if="tab === 'invalidate'" class="card">
-        <h3 class="card-title">Explicit cache invalidation</h3>
-        <p class="card-desc">
-          Flush Redis entries for this organization. Use the <strong>real</strong> collection name
-          (e.g. <code class="mono">orders</code>), matching what was stored from <code class="mono">orders_cache</code> reads.
-          The proxy does <strong>not</strong> invalidate on write — only TTL expiry and this explicit action (or the API) clear cached results.
-        </p>
-        <div class="grid-2">
-          <div class="form-row">
-            <label>Database (optional)</label>
-            <input v-model="invDb" class="mono" placeholder="mydb">
-          </div>
-          <div class="form-row">
-            <label>Real collection (optional)</label>
-            <input v-model="invColl" class="mono" placeholder="orders">
-            <span class="hint">Not <code class="mono">orders_cache</code></span>
-          </div>
-        </div>
-        <div class="form-row">
-          <label>Tags (optional, comma-separated)</label>
-          <input v-model="invTags" class="mono" placeholder="user:1, order:99">
-        </div>
-        <div class="form-actions">
-          <button
-            v-if="canManage"
-            class="btn btn-danger"
-            type="button"
-            :disabled="invBusy"
-            @click="runInvalidate"
-          >
-            {{ invBusy ? 'Invalidating…' : 'Invalidate cache' }}
-          </button>
-          <p v-else class="text-sm text-muted">Only admins and owners can invalidate cache.</p>
-        </div>
-      </div>
+        <!-- Invalidate -->
+        <TabsContent value="invalidate">
+          <Card>
+            <CardHeader>
+              <CardTitle>Explicit cache invalidation</CardTitle>
+              <CardDescription>
+                Flush Redis entries for this organization. Use the <strong>real</strong> collection name
+                (e.g. <code class="font-mono text-xs">orders</code>), matching what was stored from
+                <code class="font-mono text-xs">orders_cache</code> reads.
+                The proxy does <strong>not</strong> invalidate on write — only TTL expiry and this explicit action clear cached results.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FieldGroup>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <Field>
+                    <FieldLabel>Database (optional)</FieldLabel>
+                    <Input v-model="invDb" class="font-mono" placeholder="mydb" :disabled="invBusy" />
+                  </Field>
+                  <Field>
+                    <FieldLabel>Real collection (optional)</FieldLabel>
+                    <Input v-model="invColl" class="font-mono" placeholder="orders" :disabled="invBusy" />
+                    <FieldDescription>Not <code class="font-mono">orders_cache</code></FieldDescription>
+                  </Field>
+                </div>
+                <Field>
+                  <FieldLabel>Tags (optional, comma-separated)</FieldLabel>
+                  <Input v-model="invTags" class="font-mono" placeholder="user:1, order:99" :disabled="invBusy" />
+                </Field>
+              </FieldGroup>
+            </CardContent>
+            <CardFooter class="border-t border-border/60 pt-4">
+              <Button
+                v-if="canManage"
+                variant="destructive"
+                :disabled="invBusy"
+                @click="runInvalidate"
+              >
+                <Spinner v-if="invBusy" data-icon="inline-start" />
+                {{ invBusy ? 'Invalidating…' : 'Invalidate cache' }}
+              </Button>
+              <p v-else class="text-sm text-muted-foreground">Only admins and owners can invalidate cache.</p>
+            </CardFooter>
+          </Card>
+        </TabsContent>
 
-      <!-- Savings -->
-      <div v-if="tab === 'savings'" class="card">
-        <h3 class="card-title">Savings / metrics</h3>
-        <div v-if="!savings" class="loading">Loading…</div>
-        <template v-else>
-          <p class="card-desc">{{ savings.note }}</p>
-          <p class="text-sm text-muted mb-1">Suggested Prometheus queries:</p>
-          <ul style="margin: 0; padding-left: 1.2rem;">
-            <li v-for="(q, i) in savings.suggestedQueries" :key="i" class="mb-1">
-              <code class="mono text-sm" style="word-break: break-all;">{{ q }}</code>
-            </li>
-          </ul>
-        </template>
-      </div>
+        <!-- Savings -->
+        <TabsContent value="savings">
+          <Card>
+            <CardHeader>
+              <CardTitle>Savings / metrics</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div v-if="!savings" class="flex items-center gap-2 text-sm text-muted-foreground">
+                <Spinner />
+                Loading…
+              </div>
+              <template v-else>
+                <p class="mb-4 text-sm text-muted-foreground">{{ savings.note }}</p>
+                <p class="wire-label mb-2">Suggested Prometheus queries</p>
+                <ul class="flex flex-col gap-2">
+                  <li
+                    v-for="(q, i) in savings.suggestedQueries"
+                    :key="i"
+                    class="rounded-md border border-border/80 bg-muted/30 px-3 py-2"
+                  >
+                    <code class="break-all font-mono text-xs">{{ q }}</code>
+                  </li>
+                </ul>
+              </template>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <!-- Danger -->
+        <TabsContent v-if="canDelete" value="danger">
+          <Card class="border-destructive/40 bg-destructive/5">
+            <CardHeader>
+              <CardTitle class="flex items-center gap-2 text-destructive">
+                <AlertTriangleIcon class="size-4" />
+                Delete organization
+              </CardTitle>
+              <CardDescription>
+                Permanently remove <strong>{{ tenant?.name }}</strong>
+                (<code class="font-mono text-xs">{{ tenantId }}</code>) and
+                <strong>all related data</strong>: members, invites, backend connection, cache policies, proxy tokens, and audit history.
+                This cannot be undone. Only <strong>owners</strong> can delete an organization.
+              </CardDescription>
+            </CardHeader>
+            <CardContent class="flex flex-col gap-4">
+              <template v-if="deleteStep === 'warn'">
+                <label class="flex items-start gap-3 text-sm leading-snug">
+                  <Checkbox
+                    :model-value="deleteAck"
+                    class="mt-0.5"
+                    @update:model-value="(v: boolean | 'indeterminate') => deleteAck = v === true"
+                  />
+                  <span>
+                    I understand that all organization data will be permanently lost and cannot be recovered.
+                  </span>
+                </label>
+                <div>
+                  <Button
+                    variant="destructive"
+                    :disabled="deleteBusy || !deleteAck"
+                    @click="sendDeleteCode"
+                  >
+                    <Spinner v-if="deleteBusy" data-icon="inline-start" />
+                    {{ deleteBusy ? 'Sending…' : 'Send verification code to my email' }}
+                  </Button>
+                  <p class="mt-2 text-xs text-muted-foreground">
+                    We will email a 6-digit code to your account address. Enter it on the next step to confirm deletion.
+                  </p>
+                </div>
+              </template>
+
+              <template v-else>
+                <Alert>
+                  <AlertTitle>Check your email</AlertTitle>
+                  <AlertDescription>
+                    Enter the verification code below to delete this organization forever
+                    (also in control plane logs in dev).
+                  </AlertDescription>
+                </Alert>
+                <Field>
+                  <FieldLabel>Verification code</FieldLabel>
+                  <Input
+                    v-model="deleteCode"
+                    type="text"
+                    inputmode="numeric"
+                    autocomplete="one-time-code"
+                    placeholder="123456"
+                    class="font-mono tracking-widest"
+                    :disabled="deleteBusy"
+                  />
+                </Field>
+                <div class="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    :disabled="deleteBusy"
+                    @click="deleteStep = 'warn'; deleteCode = ''"
+                  >
+                    Back
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    :disabled="deleteBusy || !deleteCode.trim()"
+                    @click="confirmDeleteOrg"
+                  >
+                    <Spinner v-if="deleteBusy" data-icon="inline-start" />
+                    <Trash2Icon v-else data-icon="inline-start" />
+                    {{ deleteBusy ? 'Deleting…' : 'Permanently delete organization' }}
+                  </Button>
+                </div>
+              </template>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </template>
+
+    <AlertDialog v-model:open="revokeOpen">
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Revoke this token?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Clients using it will fail auth immediately. This cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" @click="revokeToken">
+            Revoke token
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </div>
 </template>
-
-<style scoped>
-.help-list {
-  margin: 0 0 1rem;
-  padding-left: 1.2rem;
-  color: var(--text-muted, #8b9bb0);
-  font-size: 0.9rem;
-  line-height: 1.55;
-}
-.help-list li { margin-bottom: 0.35rem; }
-.callout-card {
-  border-color: rgba(61, 156, 240, 0.35);
-  background: linear-gradient(135deg, rgba(61, 156, 240, 0.08), transparent);
-}
-.code-examples {
-  display: flex;
-  flex-direction: column;
-  gap: 0.65rem;
-}
-.code-example {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 0.75rem;
-  padding: 0.55rem 0.75rem;
-  border-radius: 6px;
-  background: var(--bg, #0b0f14);
-  border: 1px solid var(--border-subtle, #1a2433);
-}
-.code-example code { font-size: 0.82rem; }
-.header-badges { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-.role-badge { text-transform: none; font-weight: 500; }
-.role-banner { margin-bottom: 1rem; }
-.tab-danger { color: var(--danger, #f87171) !important; }
-.danger-card {
-  border-color: rgba(248, 113, 113, 0.45);
-  background: linear-gradient(135deg, rgba(248, 113, 113, 0.08), transparent);
-}
-.danger-steps { display: flex; flex-direction: column; gap: 0.85rem; margin-top: 0.5rem; }
-.ack-row {
-  display: flex;
-  gap: 0.65rem;
-  align-items: flex-start;
-  font-size: 0.9rem;
-  line-height: 1.4;
-}
-.ack-row input { margin-top: 0.2rem; }
-</style>

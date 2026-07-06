@@ -1,4 +1,18 @@
 <script setup lang="ts">
+import { Building2Icon, LogOutIcon } from '@lucide/vue'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Separator } from '@/components/ui/separator'
+
 const auth = useAuth()
 const api = useAcceleratorApi()
 const route = useRoute()
@@ -30,63 +44,90 @@ async function onLogout() {
   auth.clearSession()
   await navigateTo('/login')
 }
+
+const initials = computed(() => {
+  const name = auth.user.value?.name?.trim()
+  const email = auth.user.value?.email || ''
+  if (name) {
+    return name.split(/\s+/).map(p => p[0]).slice(0, 2).join('').toUpperCase()
+  }
+  return (email[0] || 'U').toUpperCase()
+})
 </script>
 
 <template>
-  <div class="app-shell">
-    <header class="topbar">
-      <NuxtLink to="/" class="brand">
-        <span class="logo-mark">N</span>
-        <span>Nance Admin</span>
-      </NuxtLink>
-      <nav class="nav">
-        <NuxtLink to="/">Organizations</NuxtLink>
-      </nav>
-      <div v-if="auth.user" class="user-menu">
-        <span class="user-email">{{ auth.user.name || auth.user.email }}</span>
-        <button class="btn btn-ghost btn-sm" type="button" @click="onLogout">Sign out</button>
+  <div class="flex min-h-svh flex-col">
+    <header class="sticky top-0 z-40 border-b border-border/80 bg-background/85 backdrop-blur-md">
+      <div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4 sm:px-6 lg:px-8">
+        <NuxtLink
+          to="/"
+          class="flex items-center gap-2.5 text-foreground no-underline transition-opacity hover:opacity-90"
+        >
+          <span
+            class="flex size-7 items-center justify-center rounded-md bg-primary font-mono text-xs font-bold text-primary-foreground shadow-[0_0_20px_-4px] shadow-primary/50"
+          >
+            N
+          </span>
+          <span class="flex flex-col leading-none">
+            <span class="text-sm font-semibold tracking-tight">Nance</span>
+            <span class="wire-label mt-0.5 text-[0.6rem] leading-none">Control plane</span>
+          </span>
+        </NuxtLink>
+
+        <Separator orientation="vertical" class="hidden h-6 sm:block" />
+
+        <nav class="hidden items-center gap-1 sm:flex">
+          <Button
+            variant="ghost"
+            size="sm"
+            as-child
+            :class="route.path === '/' || route.path.startsWith('/tenants') ? 'bg-muted text-foreground' : ''"
+          >
+            <NuxtLink to="/">
+              <Building2Icon data-icon="inline-start" />
+              Organizations
+            </NuxtLink>
+          </Button>
+        </nav>
+
+        <div class="ml-auto flex items-center gap-2">
+          <DropdownMenu v-if="auth.user">
+            <DropdownMenuTrigger as-child>
+              <Button variant="ghost" size="sm" class="gap-2 pl-1.5">
+                <Avatar class="size-6">
+                  <AvatarFallback class="bg-primary/15 text-[0.65rem] font-semibold text-primary">
+                    {{ initials }}
+                  </AvatarFallback>
+                </Avatar>
+                <span class="hidden max-w-40 truncate text-sm sm:inline">
+                  {{ auth.user.name || auth.user.email }}
+                </span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" class="w-56">
+              <DropdownMenuGroup>
+                <DropdownMenuLabel class="font-normal">
+                  <div class="flex flex-col gap-0.5">
+                    <span class="text-sm font-medium">{{ auth.user.name || 'Account' }}</span>
+                    <span class="truncate text-xs text-muted-foreground">{{ auth.user.email }}</span>
+                  </div>
+                </DropdownMenuLabel>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuItem @click="onLogout">
+                  <LogOutIcon />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
     </header>
-    <main class="main">
+
+    <main class="flex-1">
       <slot />
     </main>
   </div>
 </template>
-
-<style scoped>
-.app-shell { min-height: 100vh; display: flex; flex-direction: column; }
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  padding: 0.75rem 1.5rem;
-  border-bottom: 1px solid var(--border, #2a2f3a);
-  background: var(--surface, #12151c);
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  font-weight: 600;
-  text-decoration: none;
-  color: inherit;
-}
-.logo-mark {
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: 0.35rem;
-  background: var(--accent, #5b8def);
-  color: #fff;
-  display: grid;
-  place-items: center;
-  font-size: 0.85rem;
-  font-weight: 700;
-}
-.nav { display: flex; gap: 1rem; flex: 1; }
-.nav a { color: inherit; opacity: 0.8; text-decoration: none; }
-.nav a.router-link-active { opacity: 1; font-weight: 600; }
-.user-menu { display: flex; align-items: center; gap: 0.75rem; }
-.user-email { font-size: 0.85rem; opacity: 0.75; }
-.main { flex: 1; padding: 1.5rem; max-width: 1100px; width: 100%; margin: 0 auto; }
-.btn-sm { padding: 0.35rem 0.65rem; font-size: 0.8rem; }
-</style>
