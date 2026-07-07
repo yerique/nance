@@ -296,30 +296,10 @@ func (h *Handler) handlePassthrough(ctx context.Context, cs *ConnState, msg *wir
 	} else if cmdLower == "aggregate" {
 		reply, err = h.handleAggregate(ctx, cs, client, dbName, cmdDoc, info)
 	} else {
-		// Default: RunCommand passthrough. Modern drivers always attach lsid; the pool's
-		// mongo.Client manages its own sessions — forwarding wire lsid causes
-		// "duplicate field lsid" on the backend.
-		runCmd := cmdDoc
-		if !info.IsTxn {
-			runCmd = stripSessionFields(cmdDoc)
-		}
-		runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-
-		var result bson.M
-		err = client.Database(dbName).RunCommand(runCtx, runCmd).Decode(&result)
-		if err != nil {
-			telemetry.ProxyBackendErrors.WithLabelValues(tenantID).Inc()
-			return command.MongoErrorToReply(err), nil
-		}
-
-		// Rewrite cursor ids in replies if present (find/aggregate via RunCommand path)
-		if curVal, ok := result["cursor"]; ok {
-			if rewritten, did := h.maybeRewriteCursor(cs, tenantID, curVal, dbName, info.Collection); did {
-				result["cursor"] = rewritten
-			}
-		}
-		reply = mapToD(result)
+		// Default: RunCommand passthrough. Always strip client session fields —
+		// the pool mongo.Client owns its own sessions; forwarding wire lsid/txnNumber
+		// produces "duplicate field lsid" on the backend.
+		reply, err = h.runCommandRaw(ctx, cs, client, dbName, cmdDoc, info)
 	}
 	if err != nil {
 		return reply, err
@@ -409,14 +389,7 @@ func (h *Handler) tryCacheRead(
 		case "aggregate":
 			backendReply, err = h.handleAggregate(ctx, cs, client, dbName, cmdDoc, info)
 		default:
-			runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			defer cancel()
-			var result bson.M
-			err = client.Database(dbName).RunCommand(runCtx, cmdDoc).Decode(&result)
-			if err != nil {
-				return nil, err
-			}
-			backendReply = mapToD(result)
+			backendReply, err = h.runCommandRaw(ctx, cs, client, dbName, cmdDoc, info)
 		}
 		if err != nil {
 			return nil, err
@@ -693,15 +666,10 @@ func (h *Handler) handleFind(ctx context.Context, cs *ConnState, client *mongo.C
 		batchSize = int32(bs)
 		opts.SetBatchSize(batchSize)
 	}
-	if _, ok := fieldBool(cmd, "singleBatch"); ok {
-		// handled after first batch
-	}
-
-	// Only multi-doc transactions need wire session fields forwarded. Otherwise use
-	// the collection helper (backend client owns the session).
-	if info.IsTxn {
-		return h.runCommandRaw(ctx, cs, client, dbName, cmd, info)
-	}
+	// Always use the collection helper. Never forward the client's wire session
+	// (lsid/txnNumber/autocommit) via RunCommand — the pool client attaches its
+	// own session and "duplicate field lsid" breaks every modern driver find().
+	// Multi-doc transactions are not supported through the shared pool (cache bypass only).
 
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -725,15 +693,7 @@ func (h *Handler) handleAggregate(ctx context.Context, cs *ConnState, client *mo
 		pipeline = bson.A{}
 	}
 
-	if info.IsTxn {
-		return h.runCommandRaw(ctx, cs, client, dbName, cmd, info)
-	}
-
 	opts := options.Aggregate()
-	if bs, ok := fieldInt64(cmd, "cursor"); ok {
-		// cursor may be a subdocument { batchSize: N }
-		_ = bs
-	}
 	// Extract batchSize from cursor subdoc
 	batchSize := int32(101)
 	if curOpt := fieldDoc(cmd, "cursor"); curOpt != nil {
@@ -757,7 +717,7 @@ func (h *Handler) handleAggregate(ctx context.Context, cs *ConnState, client *mo
 	var cur *mongo.Cursor
 	var err error
 	if collName == "1" || collName == "" {
-		// db-level aggregate not easily supported via collection; RunCommand
+		// db-level aggregate not easily supported via collection; RunCommand (session-stripped)
 		return h.runCommandRaw(ctx, cs, client, dbName, cmd, info)
 	}
 	cur, err = client.Database(dbName).Collection(collName).Aggregate(runCtx, pipeline, opts)
@@ -767,19 +727,25 @@ func (h *Handler) handleAggregate(ctx context.Context, cs *ConnState, client *mo
 	return h.firstBatchFromCursor(ctx, cs, cur, dbName, collName, batchSize, false)
 }
 
+// runCommandRaw executes cmd on the backend pool client. Always strips client
+// session fields (lsid/txnNumber/autocommit/startTransaction): the pool's
+// mongo.Client manages its own sessions and forwarding wire session state
+// causes "duplicate field lsid" (or silent txn mis-routing).
 func (h *Handler) runCommandRaw(ctx context.Context, cs *ConnState, client *mongo.Client, dbName string, cmd bson.D, info command.Info) (any, error) {
-	tenantID := cs.Tenant.TenantID
+	tenantID := ""
+	if cs != nil && cs.Tenant != nil {
+		tenantID = cs.Tenant.TenantID
+	}
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	runCmd := cmd
-	if !info.IsTxn {
-		runCmd = stripSessionFields(cmd)
-	}
+	runCmd := stripSessionFields(cmd)
 	var result bson.M
 	err := client.Database(dbName).RunCommand(runCtx, runCmd).Decode(&result)
 	if err != nil {
-		telemetry.ProxyBackendErrors.WithLabelValues(tenantID).Inc()
+		if tenantID != "" {
+			telemetry.ProxyBackendErrors.WithLabelValues(tenantID).Inc()
+		}
 		return command.MongoErrorToReply(err), nil
 	}
 	if curVal, ok := result["cursor"]; ok {
@@ -966,6 +932,17 @@ func fieldDoc(cmd bson.D, key string) bson.D {
 					d = append(d, bson.E{Key: k, Value: val})
 				}
 				return d
+			case map[string]any:
+				d := make(bson.D, 0, len(v))
+				for k, val := range v {
+					d = append(d, bson.E{Key: k, Value: val})
+				}
+				return d
+			case bson.Raw:
+				var d bson.D
+				if err := bson.Unmarshal(v, &d); err == nil {
+					return d
+				}
 			}
 		}
 	}

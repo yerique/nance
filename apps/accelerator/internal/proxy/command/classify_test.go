@@ -47,3 +47,50 @@ func TestIsPreAuthAllowed(t *testing.T) {
 		t.Fatal("pre-auth gate wrong")
 	}
 }
+
+func TestHasTxnContext(t *testing.T) {
+	// Bare lsid (every modern-driver command) is NOT a multi-doc transaction.
+	rawLSID, _ := bson.Marshal(bson.D{
+		{Key: "find", Value: "users"},
+		{Key: "$db", Value: "mydb"},
+		{Key: "lsid", Value: bson.D{{Key: "id", Value: "sess"}}},
+	})
+	info, err := Classify(rawLSID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.IsTxn {
+		t.Fatal("lsid-only find must not be treated as a transaction")
+	}
+
+	// txnNumber alone is retryable writes, not multi-doc txn.
+	rawTxnNum, _ := bson.Marshal(bson.D{
+		{Key: "find", Value: "users"},
+		{Key: "$db", Value: "mydb"},
+		{Key: "lsid", Value: bson.D{{Key: "id", Value: "sess"}}},
+		{Key: "txnNumber", Value: int64(1)},
+	})
+	info, err = Classify(rawTxnNum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.IsTxn {
+		t.Fatal("txnNumber without autocommit must not be treated as multi-doc transaction")
+	}
+
+	// Real multi-doc transaction.
+	rawTxn, _ := bson.Marshal(bson.D{
+		{Key: "find", Value: "users"},
+		{Key: "$db", Value: "mydb"},
+		{Key: "lsid", Value: bson.D{{Key: "id", Value: "sess"}}},
+		{Key: "txnNumber", Value: int64(1)},
+		{Key: "autocommit", Value: false},
+	})
+	info, err = Classify(rawTxn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsTxn {
+		t.Fatal("autocommit:false must mark multi-doc transaction")
+	}
+}

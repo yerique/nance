@@ -85,8 +85,12 @@ func Classify(raw bson.Raw) (Info, error) {
 	return info, nil
 }
 
+// hasTxnContext is true only for multi-document transactions.
+// Modern drivers attach lsid to almost every command, and txnNumber for
+// retryable writes — neither means a multi-doc transaction.
+// Multi-doc txns always include autocommit (false) and/or startTransaction.
 func hasTxnContext(raw bson.Raw) bool {
-	if _, err := raw.LookupErr("txnNumber"); err == nil {
+	if _, err := raw.LookupErr("startTransaction"); err == nil {
 		return true
 	}
 	if _, err := raw.LookupErr("autocommit"); err == nil {

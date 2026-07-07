@@ -24,6 +24,7 @@ import (
 	"github.com/taeven/nance/accelerator/internal/proxy/ratelimit"
 	"github.com/taeven/nance/accelerator/internal/proxy/server"
 
+	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -138,7 +139,7 @@ func TestProxyCache_LiveMongoRedis(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// --- Redis on dedicated logical DB ---
+	// --- Redis on dedicated logical DB (flush so prior runs cannot poison hit/miss counts) ---
 	rs, err := cache.NewRedisStore(ctx, cache.Options{Addr: "127.0.0.1:6379", DB: redisDB})
 	if err != nil {
 		t.Fatalf("redis: %v", err)
@@ -147,6 +148,12 @@ func TestProxyCache_LiveMongoRedis(t *testing.T) {
 	if err := rs.Ping(ctx); err != nil {
 		t.Fatalf("redis ping: %v", err)
 	}
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379", DB: redisDB})
+	if err := rdb.FlushDB(ctx).Err(); err != nil {
+		_ = rdb.Close()
+		t.Fatalf("redis flush db %d: %v", redisDB, err)
+	}
+	_ = rdb.Close()
 
 	coord := cache.NewCoordinator(rs)
 	pol := policy.NewEngine(ms, slog.Default(), time.Hour)
@@ -213,12 +220,10 @@ func TestProxyCache_LiveMongoRedis(t *testing.T) {
 	)
 	t.Logf("proxy listen=%s tenant=%s", listen, testTenantID)
 
-	// --- Client via proxy ---
+	// --- Client via proxy (default sessions ON — drivers always send lsid) ---
 	cli, err := mongo.Connect(ctx, options.Client().
 		ApplyURI(proxyURI).
-		SetDirect(true).
-		SetRetryWrites(false).
-		SetRetryReads(false))
+		SetDirect(true))
 	if err != nil {
 		t.Fatalf("proxy connect: %v", err)
 	}
@@ -227,21 +232,45 @@ func TestProxyCache_LiveMongoRedis(t *testing.T) {
 		t.Fatalf("proxy ping: %v", err)
 	}
 
-	// 1) Bypass read (real collection) — use Find (CountDocuments can hit session/lsid edge cases on the proxy)
+	// 1) Bypass read (real collection) with an explicit session (lsid on the wire).
+	// This is the path that previously failed with "duplicate field lsid".
+	sess, err := cli.StartSession()
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	defer sess.EndSession(ctx)
+
 	bypassColl := cli.Database(testDB).Collection(testColl)
 	var bypassOpen []bson.M
-	bcur, err := bypassColl.Find(ctx, bson.M{"status": "open"})
+	err = mongo.WithSession(ctx, sess, func(sc mongo.SessionContext) error {
+		bcur, ferr := bypassColl.Find(sc, bson.M{"status": "open"})
+		if ferr != nil {
+			return ferr
+		}
+		defer bcur.Close(sc)
+		return bcur.All(sc, &bypassOpen)
+	})
 	if err != nil {
-		t.Fatalf("bypass find: %v", err)
+		t.Fatalf("bypass find with session: %v", err)
 	}
-	if err := bcur.All(ctx, &bypassOpen); err != nil {
-		t.Fatalf("bypass decode: %v", err)
-	}
-	_ = bcur.Close(ctx)
 	if len(bypassOpen) != 2 {
 		t.Fatalf("bypass open count=%d want 2", len(bypassOpen))
 	}
-	t.Logf("bypass Find(status=open) = %d docs", len(bypassOpen))
+	t.Logf("bypass Find(status=open) with session = %d docs", len(bypassOpen))
+
+	// Also exercise session-less find (driver still often attaches implicit session/lsid).
+	var bypassAll []bson.M
+	bcur2, err := bypassColl.Find(ctx, bson.M{})
+	if err != nil {
+		t.Fatalf("bypass find all: %v", err)
+	}
+	if err := bcur2.All(ctx, &bypassAll); err != nil {
+		t.Fatalf("bypass find all decode: %v", err)
+	}
+	_ = bcur2.Close(ctx)
+	if len(bypassAll) != 3 {
+		t.Fatalf("bypass all count=%d want 3", len(bypassAll))
+	}
 
 	// 2) Cache path: first find = miss, second = hit
 	cacheColl := cli.Database(testDB).Collection(testColl + "_cache")
