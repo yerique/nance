@@ -4,6 +4,21 @@
 
 Self-host the stack on your own servers, invite your team, point application clients at the proxy, and opt into caching **per query** with a `_cache` collection suffix.
 
+
+## Hosted Nance (Oxella Technologies)
+
+Want managed Nance without operating the stack yourself?
+
+**[Oxella Technologies](https://oxella.com)** provides **hosted Nance** — control plane, wire proxy, and cache infrastructure on **oxella.com**.
+
+| | |
+|--|--|
+| Marketing / product site | [https://oxella.com](https://oxella.com) |
+| Application console | [https://app.oxella.com](https://app.oxella.com) |
+| Open-source self-host | this repository |
+
+Self-host with the apps in this monorepo, or use Oxella for a fully managed experience. Same product model either way.
+
 ## Repository layout
 
 | Path | Description |
