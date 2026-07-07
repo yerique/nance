@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -31,20 +33,26 @@ type RedisStore struct {
 	client redis.UniversalClient
 	getTO  time.Duration
 	setTO  time.Duration
+	// Endpoint is a password-redacted form of the configured address (for logs).
+	Endpoint string
 }
 
 // Options configures the Redis client.
 type Options struct {
-	Addr       string // host:port or comma-separated for cluster
-	Password   string
+	// Addr is host:port, host:port,host:port (cluster-style list), or a full URL:
+	//   redis://[:password@]host:port[/db]
+	//   rediss://user:password@host:port   (TLS, e.g. Redis Cloud)
+	Addr       string
+	Password   string // optional; used when Addr is host:port (not a URL). URL passwords win unless empty and this is set.
 	DB         int
 	GetTimeout time.Duration
 	SetTimeout time.Duration
 }
 
-// NewRedisStore dials Redis. Returns a store even if ping fails (fail-open at runtime).
+// NewRedisStore dials Redis. Accepts host:port or redis(s):// URLs.
+// Returns a store even if the initial ping fails (callers may fail-open).
 func NewRedisStore(ctx context.Context, opts Options) (*RedisStore, error) {
-	if opts.Addr == "" {
+	if strings.TrimSpace(opts.Addr) == "" {
 		return nil, errors.New("redis addr required")
 	}
 	if opts.GetTimeout <= 0 {
@@ -53,17 +61,67 @@ func NewRedisStore(ctx context.Context, opts Options) (*RedisStore, error) {
 	if opts.SetTimeout <= 0 {
 		opts.SetTimeout = 200 * time.Millisecond
 	}
-	client := redis.NewClient(&redis.Options{
-		Addr:     opts.Addr,
-		Password: opts.Password,
-		DB:       opts.DB,
-	})
-	s := &RedisStore{client: client, getTO: opts.GetTimeout, setTO: opts.SetTimeout}
-	// Non-fatal ping on startup
+
+	client, endpoint, err := newRedisClient(opts)
+	if err != nil {
+		return nil, err
+	}
+	s := &RedisStore{client: client, getTO: opts.GetTimeout, setTO: opts.SetTimeout, Endpoint: endpoint}
+	// Non-fatal ping on startup (callers also ping and may log)
 	pctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	_ = client.Ping(pctx).Err()
 	return s, nil
+}
+
+func newRedisClient(opts Options) (*redis.Client, string, error) {
+	addr := strings.TrimSpace(opts.Addr)
+	// Full URL form (Redis Cloud, Upstash, etc.)
+	if strings.HasPrefix(addr, "redis://") || strings.HasPrefix(addr, "rediss://") || strings.HasPrefix(addr, "unix://") {
+		ropts, err := redis.ParseURL(addr)
+		if err != nil {
+			return nil, "", fmt.Errorf("parse redis url: %w", err)
+		}
+		// Optional overrides when not present in the URL.
+		if ropts.Password == "" && opts.Password != "" {
+			ropts.Password = opts.Password
+		}
+		if opts.DB != 0 && !strings.Contains(addr, "/") {
+			// only apply NANCE_REDIS_DB when URL has no /db path segment
+			ropts.DB = opts.DB
+		}
+		return redis.NewClient(ropts), RedactRedisAddr(addr), nil
+	}
+	// Legacy host:port (+ optional separate password/db).
+	client := redis.NewClient(&redis.Options{
+		Addr:     addr,
+		Password: opts.Password,
+		DB:       opts.DB,
+	})
+	return client, RedactRedisAddr(addr), nil
+}
+
+// RedactRedisAddr masks credentials in redis URLs for logs.
+func RedactRedisAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	if !strings.Contains(addr, "://") {
+		return addr
+	}
+	u, err := url.Parse(addr)
+	if err != nil {
+		return "redis://***"
+	}
+	if u.User != nil {
+		if _, hasPass := u.User.Password(); hasPass {
+			u.User = url.UserPassword("***", "***")
+		} else if name := u.User.Username(); name != "" {
+			u.User = url.User("***")
+		}
+	}
+	return u.String()
 }
 
 func (s *RedisStore) Get(ctx context.Context, key string) ([]byte, error) {

@@ -297,7 +297,7 @@ func (s *ConnectionService) Test(ctx context.Context, tenantID, connectionID str
 
 	if _, err := client.ListDatabases(ctx, bson.D{}); err != nil {
 		return fmt.Errorf("listDatabases failed: %w", err)
-	}
+	}z
 
 	_ = s.store.UpdateConnectionValidated(ctx, connectionID)
 	_ = s.store.RecordAudit(ctx, tenantID, "system", "test_connection", map[string]any{"connection_id": connectionID, "success": true})

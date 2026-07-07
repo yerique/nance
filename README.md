@@ -10,7 +10,7 @@ Self-host the stack on your own servers, invite your team, point application cli
 |------|-------------|
 | [`apps/accelerator`](apps/accelerator) | Control plane (HTTP API) + data-plane **proxy** (Mongo wire protocol) |
 | [`apps/admin-dashboard`](apps/admin-dashboard) | Nuxt admin UI (email OTP login, orgs, members, policies, tokens) |
-| [`apps/mongo-loadtest`](apps/mongo-loadtest) | Go load tester for MongoDB or the Nance proxy (throughput, latency, breaking point) |
+| [`apps/benchmark`](apps/benchmark) | Locust (Python) load tests for MongoDB / proxy — cache vs bypass benchmarks |
 
 ```
                     ┌─────────────────────┐
@@ -120,14 +120,18 @@ db.orders_cache.find({ status: "open" })
 db.orders.find({ status: "open" })
 ```
 
-### 4. Load test (optional)
+### 4. Benchmark (optional)
 
 ```bash
-cd apps/mongo-loadtest
-go run ./cmd/loadtest -uri 'mongodb://...' -db loadtest -collection loadtest_docs
+cd apps/benchmark
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+export MONGO_URI='mongodb://demo:<token>@127.0.0.1:27018/?authMechanism=PLAIN&authSource=$external&directConnection=true'
+python scripts/seed.py
+locust -f locustfile.py CompareUser --headless -u 50 -r 10 -t 2m
 ```
 
-Details: [`apps/mongo-loadtest/README.md`](apps/mongo-loadtest/README.md).
+Details: [`apps/benchmark/README.md`](apps/benchmark/README.md).
 
 ## Components at a glance
 
@@ -150,8 +154,9 @@ Details: [`apps/mongo-loadtest/README.md`](apps/mongo-loadtest/README.md).
 
 ## Development
 
-- **Go 1.22+** for accelerator and mongo-loadtest  
+- **Go 1.22+** for accelerator  
 - **Node 20+** for admin-dashboard  
+- **Python 3.11+** for apps/benchmark (Locust)  
 - Accelerator: `make test`, `make build-all`, `make lint` (see app README)  
 - Migrations live in `apps/accelerator/migrations/` and run on control plane start  
 
@@ -174,4 +179,4 @@ The codebase is under active development; APIs and env vars may evolve — prefe
 
 - [Accelerator (control plane + proxy)](apps/accelerator/README.md)
 - [Admin dashboard](apps/admin-dashboard/README.md)
-- [mongo-loadtest](apps/mongo-loadtest/README.md)
+- [benchmark (Locust)](apps/benchmark/README.md)

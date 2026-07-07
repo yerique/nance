@@ -66,13 +66,15 @@ func main() {
 			DB:       cfg.RedisDB,
 		})
 		if rerr != nil {
-			logger.Warn("redis init failed; cache disabled (passthrough only)", "error", rerr)
+			logger.Warn("redis init failed; cache disabled (passthrough only)",
+				"addr", cache.RedactRedisAddr(cfg.RedisAddr), "error", rerr)
 			cacheCoord = cache.NewCoordinator(cache.NoopStore{})
 		} else {
 			if perr := rs.Ping(ctx); perr != nil {
-				logger.Warn("redis ping failed at startup; continuing fail-open", "addr", cfg.RedisAddr, "error", perr)
+				logger.Warn("redis ping failed at startup; continuing fail-open",
+					"addr", rs.Endpoint, "error", perr)
 			} else {
-				logger.Info("redis cache ready", "addr", cfg.RedisAddr)
+				logger.Info("redis cache ready", "addr", rs.Endpoint)
 			}
 			cacheCoord = cache.NewCoordinator(rs)
 			defer rs.Close()
@@ -129,7 +131,7 @@ func main() {
 		"health", cfg.HealthAddr,
 		"region", regCfg.LocalRegion,
 		"cache_enabled", cfg.CacheEnabled,
-		"redis", cfg.RedisAddr,
+		"redis", cache.RedactRedisAddr(cfg.RedisAddr),
 		"note", "clients must use authMechanism=PLAIN&authSource=$external; username=tenantId, password=rawToken",
 	)
 

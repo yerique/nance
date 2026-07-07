@@ -5,7 +5,7 @@ Control plane (**HTTP API**) and data-plane **MongoDB proxy** for the Nance acce
 - **Control plane** (`cmd/controlplane`): tenants/orgs, users, email OTP sessions, invites, encrypted backends, cache policies, proxy tokens, platform settings (`NANCE_INVITE_ONLY`).
 - **Proxy** (`cmd/proxy`): MongoDB wire protocol (OP_MSG), PLAIN auth with tenant tokens, connection pooling to each tenant’s real MongoDB, optional Redis read-through cache for `*_cache` collections.
 
-Part of the [Nance monorepo](../../README.md). UI: [`../admin-dashboard`](../admin-dashboard). Load tests: [`../mongo-loadtest`](../mongo-loadtest).
+Part of the [Nance monorepo](../../README.md). UI: [`../admin-dashboard`](../admin-dashboard). Benchmarks: [`../benchmark`](../benchmark) (Locust).
 
 ## Architecture
 
@@ -123,8 +123,8 @@ Both **control plane** and **proxy** load optional `.env` then `.env.local` from
 | `NANCE_PROXY_PUBLIC_ENDPOINT` | `127.0.0.1:27018` | Host[:port] embedded in issued `proxyConnectionUri` values and `GET /platform` |
 | `PORT` | `8080` | HTTP listen (host uses `PORT`; bind is `:`+port) |
 | `MIGRATIONS_DIR` | `./migrations` | SQL migrations |
-| `NANCE_REDIS_ADDR` | | Optional Redis for explicit invalidation from API |
-| `NANCE_REDIS_PASSWORD` | | Redis password |
+| `NANCE_REDIS_ADDR` | | Redis `host:port` **or** full URL `redis://user:pass@host:port` / `rediss://…` (TLS) |
+| `NANCE_REDIS_PASSWORD` | | Password when using `host:port` form (optional if embedded in URL) |
 
 ### Proxy (`cmd/proxy`)
 
@@ -134,7 +134,8 @@ Both **control plane** and **proxy** load optional `.env` then `.env.local` from
 | `DATABASE_URL` | same as CP | Token + backend + policy lookup |
 | `NANCE_PROXY_LISTEN` | `:27018` | Mongo wire TCP listen |
 | `NANCE_PROXY_HEALTH_LISTEN` | `:9090` | `/healthz`, `/readyz`, `/metrics`, `/cache-stats` (per-collection hit/miss ratios, process-local) |
-| `NANCE_REDIS_ADDR` | | Redis for read-through cache |
+| `NANCE_REDIS_ADDR` | `localhost:6379` | Redis `host:port` or URL (`redis://` / `rediss://` for managed TLS) |
+| `NANCE_REDIS_PASSWORD` | | Optional when not using a URL with password |
 | `NANCE_CACHE_ENABLED` | | Enable cache path when Redis is configured |
 | `NANCE_POLICY_REFRESH_INTERVAL` | `30s` | Reload cache policies from Postgres |
 | `NANCE_PROXY_MAX_CONNS_PER_TENANT` | `200` | Soft limit client TCP conns per tenant |
@@ -227,5 +228,5 @@ make lint   # if configured
 ## Related apps
 
 - [Admin dashboard](../admin-dashboard/README.md) — Nuxt UI on this API  
-- [mongo-loadtest](../mongo-loadtest/README.md) — stress Mongo or the proxy  
+- [benchmark](../benchmark/README.md) — Locust load tests (cache vs bypass)  
 - [Monorepo root](../../README.md)
