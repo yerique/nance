@@ -59,11 +59,13 @@ async function save() {
   <div class="auth-lattice flex min-h-svh items-center justify-center p-4 sm:p-8">
     <div class="flex w-full max-w-md flex-col gap-6">
       <div class="flex flex-col items-center gap-3 text-center">
-        <span
-          class="flex size-11 items-center justify-center rounded-xl bg-primary font-mono text-lg font-bold text-primary-foreground shadow-[0_0_32px_-6px] shadow-primary/60"
+        <img
+          src="/nance-icon.svg"
+          alt="Nance"
+          width="48"
+          height="48"
+          class="size-12 object-contain drop-shadow-[0_0_24px_rgba(251,146,60,0.35)]"
         >
-          N
-        </span>
         <div class="flex flex-col gap-1">
           <p class="wire-label">First run</p>
           <h1 class="text-2xl font-semibold tracking-tight">Welcome aboard</h1>

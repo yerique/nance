@@ -63,11 +63,13 @@ const initials = computed(() => {
           to="/"
           class="flex items-center gap-2.5 text-foreground no-underline transition-opacity hover:opacity-90"
         >
-          <span
-            class="flex size-7 items-center justify-center rounded-md bg-primary font-mono text-xs font-bold text-primary-foreground shadow-[0_0_20px_-4px] shadow-primary/50"
+          <img
+            src="/nance-icon.svg"
+            alt=""
+            width="28"
+            height="28"
+            class="size-7 shrink-0 object-contain"
           >
-            N
-          </span>
           <span class="flex flex-col leading-none">
             <span class="text-sm font-semibold tracking-tight">Nance</span>
             <span class="wire-label mt-0.5 text-[0.6rem] leading-none">Control plane</span>

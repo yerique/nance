@@ -1,5 +1,9 @@
 # Nance Admin Dashboard
 
+<p align="center">
+  <img src="public/nance-icon.svg" alt="Nance" width="72" height="72" />
+</p>
+
 Nuxt 3 admin UI for the [Nance accelerator control plane](../accelerator/README.md).
 
 Operators and team members sign in with **email + one-time code**, manage **organizations** (tenants), **members/invites**, **connections** (source Mongo + proxy access URIs), **cache TTL**, and **invalidation**. Part of the [Nance monorepo](../../README.md).

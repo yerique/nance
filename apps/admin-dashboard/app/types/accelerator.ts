@@ -83,8 +83,8 @@ export interface IssueTokenResponse {
   connectionId?: string
   description?: string
   createdAt: string
-  /** Full proxy URI for clients (shown only once with rawToken). */
-  proxyConnectionUri?: string
+  /** Full proxy URI for clients — built by control plane (shown only once with rawToken). */
+  proxyConnectionUri: string
 }
 
 /** Named source Mongo connection (URI never returned). */

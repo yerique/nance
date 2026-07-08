@@ -554,13 +554,6 @@ async function issueToken() {
   }
 }
 
-function issuedProxyUri(): string {
-  const issued = issuedToken.value
-  if (!issued) return ''
-  if (issued.proxyConnectionUri) return issued.proxyConnectionUri
-  return `mongodb://${encodeURIComponent(tenantId.value)}:${encodeURIComponent(issued.rawToken)}@127.0.0.1:27018/?authMechanism=PLAIN&authSource=$external`
-}
-
 function confirmRevoke(tokenId: string) {
   revokeTarget.value = tokenId
   revokeOpen.value = true
@@ -953,13 +946,17 @@ async function confirmDeleteOrg() {
                             {{ tokenBusy ? 'Creating…' : 'Create access' }}
                           </Button>
                         </div>
-                        <div v-if="issuedToken" class="token-reveal">
+                        <div v-if="issuedToken?.proxyConnectionUri" class="token-reveal">
                           <p class="wire-label text-amber-500">
                             Proxy connection URI — copy now, shown only once
                           </p>
-                          <code class="block break-all">{{ issuedProxyUri() }}</code>
+                          <code class="block break-all">{{ issuedToken.proxyConnectionUri }}</code>
                           <div class="mt-3 flex flex-wrap gap-2">
-                            <Button variant="outline" size="sm" @click="copyText(issuedProxyUri())">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              @click="copyText(issuedToken!.proxyConnectionUri!)"
+                            >
                               <CopyIcon data-icon="inline-start" />
                               Copy proxy URI
                             </Button>

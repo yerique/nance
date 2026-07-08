@@ -1,5 +1,9 @@
 # Nance
 
+<p align="center">
+  <img src="docs/assets/nance-icon.svg" alt="Nance" width="96" height="96" />
+</p>
+
 **Nance** is an open-source **MongoDB accelerator**: a multi-tenant control plane, a MongoDB wire-protocol proxy with optional Redis read-through caching, and tools to operate and load-test it.
 
 Self-host the stack on your own servers, invite your team, point application clients at the proxy, and opt into caching **per query** with a `_cache` collection suffix.
@@ -26,6 +30,7 @@ Self-host with the apps in this monorepo, or use Oxella for a fully managed expe
 | [`apps/accelerator`](apps/accelerator) | Control plane (HTTP API) + data-plane **proxy** (Mongo wire protocol) |
 | [`apps/admin-dashboard`](apps/admin-dashboard) | Nuxt admin UI (email OTP login, orgs, members, policies, tokens) |
 | [`apps/benchmark`](apps/benchmark) | Locust (Python) load tests for MongoDB / proxy — cache vs bypass benchmarks |
+| [`docs/assets/nance-icon.svg`](docs/assets/nance-icon.svg) | Brand icon (admin UI serves a copy from `public/nance-icon.svg`) |
 
 ```
                     ┌─────────────────────┐

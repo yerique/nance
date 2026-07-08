@@ -114,7 +114,10 @@ func main() {
 		}
 	}()
 
-	logger.Info("control plane starting", "addr", cfg.Port)
+	logger.Info("control plane starting",
+		"addr", cfg.Port,
+		"proxyPublicEndpoint", cfg.ProxyPublicEndpoint,
+	)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server error", "error", err)
 		os.Exit(1)

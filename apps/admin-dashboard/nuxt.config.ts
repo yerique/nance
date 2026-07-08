@@ -35,6 +35,10 @@ export default defineNuxtConfig({
         { name: 'color-scheme', content: 'dark' },
         { name: 'theme-color', content: '#0b1220' },
       ],
+      link: [
+        { rel: 'icon', type: 'image/svg+xml', href: '/nance-icon.svg' },
+        { rel: 'apple-touch-icon', href: '/nance-icon.svg' },
+      ],
     },
   },
 })
