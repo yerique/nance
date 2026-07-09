@@ -31,6 +31,9 @@ type Config struct {
 	CursorIdleTimeout time.Duration
 	// AllowUnauthenticated permits commands without prior auth (dev only; hello still works).
 	AllowUnauthenticated bool
+	// AuthCacheTTL caches successful PLAIN auths in-process (0 = disable).
+	// Hits revalidate revoke/expiry via GetTokenByID (no bcrypt).
+	AuthCacheTTL time.Duration
 
 	// Redis / cache (Phase 2)
 	RedisAddr             string
@@ -68,6 +71,7 @@ func Load() *Config {
 	idleEvictEvery := getenvDuration("NANCE_PROXY_BACKEND_IDLE_EVICT_INTERVAL", time.Minute)
 	cursorIdle := getenvDuration("NANCE_PROXY_CURSOR_IDLE_TIMEOUT", 10*time.Minute)
 	allowUnauth := getenvBool("NANCE_PROXY_ALLOW_UNAUTH", false)
+	authCacheTTL := getenvDurationAllowZero("NANCE_PROXY_AUTH_CACHE_TTL", 60*time.Second)
 	redisAddr := getenv("NANCE_REDIS_ADDR", "localhost:6379")
 	cacheOn := getenvBool("NANCE_CACHE_ENABLED", true)
 	policyRefresh := getenvDuration("NANCE_POLICY_REFRESH_INTERVAL", 30*time.Second)
@@ -89,6 +93,7 @@ func Load() *Config {
 		BackendIdleEvictInterval: idleEvictEvery,
 		CursorIdleTimeout:        cursorIdle,
 		AllowUnauthenticated:     allowUnauth,
+		AuthCacheTTL:             authCacheTTL,
 		RedisAddr:                redisAddr,
 		RedisPassword:            os.Getenv("NANCE_REDIS_PASSWORD"),
 		RedisDB:                  getenvInt("NANCE_REDIS_DB", 0),

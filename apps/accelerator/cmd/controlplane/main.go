@@ -79,7 +79,7 @@ func main() {
 	tokenSvc := service.NewTokenService(pgStore).
 		WithProxyPublicEndpoint(cfg.ProxyPublicEndpoint).
 		WithReenableWindow(cfg.TokenReenableWindow)
-	mailer := &service.LogMailer{Log: logger}
+	mailer := newMailer(cfg, logger)
 	authSvc := service.NewAuthService(pgStore, mailer, logger)
 	orgSvc := service.NewOrgService(pgStore, mailer).WithInviteOnly(cfg.InviteOnly)
 	if cfg.InviteOnly {
@@ -127,6 +127,29 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("control plane stopped")
+}
+
+// newMailer returns SendGrid SMTP relay when configured, otherwise the dev log mailer.
+func newMailer(cfg *config.Config, logger *slog.Logger) service.Mailer {
+	if cfg != nil && cfg.SMTPConfigured() {
+		logger.Info("smtp mailer enabled",
+			"host", cfg.SMTPHost,
+			"port", cfg.SMTPPort,
+			"from", cfg.SMTPFrom,
+			"fromName", cfg.SMTPFromName,
+		)
+		return &service.SMTPMailer{
+			Host:     cfg.SMTPHost,
+			Port:     cfg.SMTPPort,
+			Username: cfg.SMTPUsername,
+			Password: cfg.SMTPPassword,
+			From:     cfg.SMTPFrom,
+			FromName: cfg.SMTPFromName,
+			Log:      logger,
+		}
+	}
+	logger.Info("smtp not configured (set SENDGRID_API_KEY or NANCE_SMTP_PASSWORD and NANCE_SMTP_FROM); using dev log mailer")
+	return &service.LogMailer{Log: logger}
 }
 
 // runMigrationsDirect performs the actual work using a fresh connection.

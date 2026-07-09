@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,11 +19,19 @@ var (
 	ErrNotFound = errors.New("not found")
 )
 
-// TokenHashRow is used by the data-plane proxy to validate raw tokens via bcrypt.
+// TokenHashRow is used by the data-plane proxy to validate raw tokens.
 type TokenHashRow struct {
 	ID           string
-	TokenHash    string
+	TokenHash    string // bcrypt (legacy verify / dual-write)
+	LookupHash   string // sha256 hex of raw token (O(1) lookup when set)
 	ConnectionID string
+}
+
+// ProxyTokenLookupHash is a fast, deterministic fingerprint of a high-entropy proxy token.
+// Used for O(1) auth lookup; raw tokens never leave the client after issue.
+func ProxyTokenLookupHash(rawToken string) string {
+	sum := sha256.Sum256([]byte(rawToken))
+	return hex.EncodeToString(sum[:])
 }
 
 // Store is the interface for control plane persistence.
@@ -50,12 +60,15 @@ type Store interface {
 	ListAllCachePolicies(ctx context.Context) ([]*model.CachePolicy, error)
 
 	// Tokens (bound to a connection)
-	CreateToken(ctx context.Context, tok *model.Token, tokenHash string) error
+	// tokenHash is bcrypt; lookupHash is sha256 hex of raw token (may be empty for legacy rows).
+	CreateToken(ctx context.Context, tok *model.Token, tokenHash, lookupHash string) error
 	GetTokenByID(ctx context.Context, id string) (*model.Token, error)
 	ListTokensForTenant(ctx context.Context, tenantID string) ([]*model.Token, error)
 	ListTokensForConnection(ctx context.Context, connectionID string) ([]*model.Token, error)
 	// ListActiveTokenHashes returns id+hash+connection for non-revoked, non-expired tokens of a tenant (proxy auth).
 	ListActiveTokenHashes(ctx context.Context, tenantID string) ([]TokenHashRow, error)
+	// GetActiveTokenByLookup returns one active token for tenant matching lookup_hash (O(1) index).
+	GetActiveTokenByLookup(ctx context.Context, tenantID, lookupHash string) (*TokenHashRow, error)
 	RevokeToken(ctx context.Context, id string) error
 	// ClearTokenRevocation clears revoked_at so the token is active again (re-enable within grace window).
 	ClearTokenRevocation(ctx context.Context, id string) error
@@ -408,11 +421,11 @@ func (s *PostgresStore) ListAllCachePolicies(ctx context.Context) ([]*model.Cach
 
 // ===== Tokens =====
 
-func (s *PostgresStore) CreateToken(ctx context.Context, tok *model.Token, tokenHash string) error {
+func (s *PostgresStore) CreateToken(ctx context.Context, tok *model.Token, tokenHash, lookupHash string) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO tokens (id, tenant_id, connection_id, token_hash, description, created_at, expires_at, revoked_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, tok.ID, tok.TenantID, nullIfEmpty(tok.ConnectionID), tokenHash, tok.Description, tok.CreatedAt, tok.ExpiresAt, tok.RevokedAt)
+		INSERT INTO tokens (id, tenant_id, connection_id, token_hash, lookup_hash, description, created_at, expires_at, revoked_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, tok.ID, tok.TenantID, nullIfEmpty(tok.ConnectionID), tokenHash, nullIfEmpty(lookupHash), tok.Description, tok.CreatedAt, tok.ExpiresAt, tok.RevokedAt)
 	return err
 }
 
@@ -493,7 +506,7 @@ func (s *PostgresStore) ListTokensForConnection(ctx context.Context, connectionI
 
 func (s *PostgresStore) ListActiveTokenHashes(ctx context.Context, tenantID string) ([]TokenHashRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, token_hash, COALESCE(connection_id, '')
+		SELECT id, token_hash, COALESCE(lookup_hash, ''), COALESCE(connection_id, '')
 		FROM tokens
 		WHERE tenant_id = $1
 		  AND revoked_at IS NULL
@@ -508,12 +521,36 @@ func (s *PostgresStore) ListActiveTokenHashes(ctx context.Context, tenantID stri
 	var out []TokenHashRow
 	for rows.Next() {
 		var r TokenHashRow
-		if err := rows.Scan(&r.ID, &r.TokenHash, &r.ConnectionID); err != nil {
+		if err := rows.Scan(&r.ID, &r.TokenHash, &r.LookupHash, &r.ConnectionID); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *PostgresStore) GetActiveTokenByLookup(ctx context.Context, tenantID, lookupHash string) (*TokenHashRow, error) {
+	if lookupHash == "" {
+		return nil, ErrNotFound
+	}
+	row := s.pool.QueryRow(ctx, `
+		SELECT id, token_hash, COALESCE(lookup_hash, ''), COALESCE(connection_id, '')
+		FROM tokens
+		WHERE tenant_id = $1
+		  AND lookup_hash = $2
+		  AND revoked_at IS NULL
+		  AND (expires_at IS NULL OR expires_at > NOW())
+		  AND connection_id IS NOT NULL
+		LIMIT 1
+	`, tenantID, lookupHash)
+	var r TokenHashRow
+	if err := row.Scan(&r.ID, &r.TokenHash, &r.LookupHash, &r.ConnectionID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &r, nil
 }
 
 func (s *PostgresStore) RevokeToken(ctx context.Context, id string) error {

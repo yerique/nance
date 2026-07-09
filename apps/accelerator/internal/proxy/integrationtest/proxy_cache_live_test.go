@@ -135,7 +135,7 @@ func TestProxyCache_LiveMongoRedis(t *testing.T) {
 	if err := ms.CreateToken(ctx, &model.Token{
 		ID: "tok_itest", TenantID: testTenantID, ConnectionID: testConnID,
 		Description: "itest", CreatedAt: now,
-	}, string(hash)); err != nil {
+	}, string(hash), store.ProxyTokenLookupHash(testTokenRaw)); err != nil {
 		t.Fatal(err)
 	}
 

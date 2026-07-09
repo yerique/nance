@@ -25,6 +25,15 @@ type Config struct {
 	// TokenReenableWindow is how long after revoke a proxy token may be re-enabled.
 	// Default 5m. Set NANCE_TOKEN_REENABLE_WINDOW=0 to disable.
 	TokenReenableWindow time.Duration
+
+	// SMTP (SendGrid SMTP relay or any compatible server). When password+from
+	// are set the control plane sends real email; otherwise it uses the dev log mailer.
+	SMTPHost     string // default smtp.sendgrid.net
+	SMTPPort     string // default 587 (STARTTLS)
+	SMTPUsername string // default "apikey" (SendGrid)
+	SMTPPassword string // SendGrid API key or SMTP password
+	SMTPFrom     string // envelope/from address, e.g. noreply@oxella.com
+	SMTPFromName string // display name, e.g. Oxella
 }
 
 func Load() *Config {
@@ -48,6 +57,29 @@ func Load() *Config {
 		proxyEndpoint = "127.0.0.1:27018"
 	}
 
+	smtpHost := strings.TrimSpace(os.Getenv("NANCE_SMTP_HOST"))
+	if smtpHost == "" {
+		smtpHost = "smtp.sendgrid.net"
+	}
+	smtpPort := strings.TrimSpace(os.Getenv("NANCE_SMTP_PORT"))
+	if smtpPort == "" {
+		smtpPort = "587"
+	}
+	smtpUser := strings.TrimSpace(os.Getenv("NANCE_SMTP_USERNAME"))
+	if smtpUser == "" {
+		smtpUser = "apikey" // SendGrid SMTP relay convention
+	}
+	smtpPass := strings.TrimSpace(os.Getenv("NANCE_SMTP_PASSWORD"))
+	if smtpPass == "" {
+		// Common SendGrid env name
+		smtpPass = strings.TrimSpace(os.Getenv("SENDGRID_API_KEY"))
+	}
+	smtpFrom := strings.TrimSpace(os.Getenv("NANCE_SMTP_FROM"))
+	smtpFromName := strings.TrimSpace(os.Getenv("NANCE_SMTP_FROM_NAME"))
+	if smtpFromName == "" {
+		smtpFromName = "Oxella"
+	}
+
 	return &Config{
 		Port:                ":" + port,
 		DatabaseURL:         dbURL,
@@ -57,7 +89,21 @@ func Load() *Config {
 		InviteOnly:          envBool("NANCE_INVITE_ONLY", false),
 		ProxyPublicEndpoint: proxyEndpoint,
 		TokenReenableWindow: envDurationAllowZero("NANCE_TOKEN_REENABLE_WINDOW", 5*time.Minute),
+		SMTPHost:            smtpHost,
+		SMTPPort:            smtpPort,
+		SMTPUsername:        smtpUser,
+		SMTPPassword:        smtpPass,
+		SMTPFrom:            smtpFrom,
+		SMTPFromName:        smtpFromName,
 	}
+}
+
+// SMTPConfigured reports whether real SMTP delivery is enabled.
+func (c *Config) SMTPConfigured() bool {
+	if c == nil {
+		return false
+	}
+	return strings.TrimSpace(c.SMTPPassword) != "" && strings.TrimSpace(c.SMTPFrom) != ""
 }
 
 func (c *Config) GetDatabaseURL() string {

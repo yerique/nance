@@ -24,6 +24,13 @@ def build_client(settings: Settings) -> MongoClient:
     if use_direct:
         kwargs["directConnection"] = True
         kwargs["retryWrites"] = False
+    # Locust: one MongoClient per simulated user. For the Nance proxy, each client
+    # is a tenant TCP connection — keep pool size 1 so high -u does not blow
+    # NANCE_PROXY_MAX_CONNS_PER_TENANT (default 200).
+    if is_nance_proxy_uri(settings.mongo_uri):
+        kwargs["maxPoolSize"] = 1
+        kwargs["minPoolSize"] = 0
+        kwargs["maxIdleTimeMS"] = 30_000
 
     return MongoClient(settings.mongo_uri, **kwargs)
 

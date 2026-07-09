@@ -31,8 +31,9 @@ type MemoryStore struct {
 }
 
 type tokenRow struct {
-	tok  *model.Token
-	hash string
+	tok    *model.Token
+	hash   string // bcrypt
+	lookup string // sha256 hex (optional)
 }
 
 type emailCode struct {
@@ -290,11 +291,11 @@ func (m *MemoryStore) ListAllCachePolicies(_ context.Context) ([]*model.CachePol
 	return out, nil
 }
 
-func (m *MemoryStore) CreateToken(_ context.Context, tok *model.Token, tokenHash string) error {
+func (m *MemoryStore) CreateToken(_ context.Context, tok *model.Token, tokenHash, lookupHash string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := *tok
-	m.tokens[tok.ID] = &tokenRow{tok: &cp, hash: tokenHash}
+	m.tokens[tok.ID] = &tokenRow{tok: &cp, hash: tokenHash, lookup: lookupHash}
 	return nil
 }
 
@@ -348,9 +349,33 @@ func (m *MemoryStore) ListActiveTokenHashes(_ context.Context, tenantID string) 
 		if t.ExpiresAt != nil && t.ExpiresAt.Before(now) {
 			continue
 		}
-		out = append(out, TokenHashRow{ID: t.ID, TokenHash: row.hash, ConnectionID: t.ConnectionID})
+		out = append(out, TokenHashRow{
+			ID: t.ID, TokenHash: row.hash, LookupHash: row.lookup, ConnectionID: t.ConnectionID,
+		})
 	}
 	return out, nil
+}
+
+func (m *MemoryStore) GetActiveTokenByLookup(_ context.Context, tenantID, lookupHash string) (*TokenHashRow, error) {
+	if lookupHash == "" {
+		return nil, ErrNotFound
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	for _, row := range m.tokens {
+		t := row.tok
+		if t.TenantID != tenantID || row.lookup != lookupHash || t.RevokedAt != nil || t.ConnectionID == "" {
+			continue
+		}
+		if t.ExpiresAt != nil && t.ExpiresAt.Before(now) {
+			continue
+		}
+		return &TokenHashRow{
+			ID: t.ID, TokenHash: row.hash, LookupHash: row.lookup, ConnectionID: t.ConnectionID,
+		}, nil
+	}
+	return nil, ErrNotFound
 }
 
 func (m *MemoryStore) RevokeToken(_ context.Context, id string) error {

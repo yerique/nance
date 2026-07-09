@@ -54,7 +54,7 @@ async function sendCode() {
     await api.requestCode(email.value.trim())
     step.value = 'code'
     toast.message('Check your email', {
-      description: 'We sent a 6-digit code (also printed in control plane logs in dev).',
+      description: 'We sent a 6-digit verification code. It expires in 10 minutes.',
     })
   }
   catch (e) {

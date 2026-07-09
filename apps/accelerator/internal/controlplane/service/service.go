@@ -535,10 +535,12 @@ func (s *TokenService) Issue(ctx context.Context, tenantID, connectionID, descri
 	}
 	rawToken := base64.RawURLEncoding.EncodeToString(buf)
 
+	// bcrypt retained for legacy verify path; lookup_hash enables O(1) proxy auth.
 	hash, err := bcrypt.GenerateFromPassword([]byte(rawToken), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
 	}
+	lookupHash := store.ProxyTokenLookupHash(rawToken)
 
 	now := time.Now().UTC()
 	tok := &model.Token{
@@ -549,7 +551,7 @@ func (s *TokenService) Issue(ctx context.Context, tenantID, connectionID, descri
 		CreatedAt:    now,
 	}
 
-	if err := s.store.CreateToken(ctx, tok, string(hash)); err != nil {
+	if err := s.store.CreateToken(ctx, tok, string(hash), lookupHash); err != nil {
 		return nil, err
 	}
 	_ = s.store.RecordAudit(ctx, tenantID, "system", "issue_token", map[string]string{

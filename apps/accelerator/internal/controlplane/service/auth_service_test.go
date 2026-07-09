@@ -33,8 +33,11 @@ func TestAuthService_RequestAndVerify(t *testing.T) {
 	if err := svc.RequestCode(ctx, "Ada@Example.COM"); err != nil {
 		t.Fatal(err)
 	}
-	if mail.n != 1 || !strings.Contains(mail.lastBody, "verification code") {
+	if mail.n != 1 || mail.lastSubject != "Your Oxella sign-in code" {
 		t.Fatalf("mail not sent: %+v", mail)
+	}
+	if !strings.Contains(mail.lastBody, "Verification code") && !strings.Contains(strings.ToLower(mail.lastBody), "verification code") {
+		t.Fatalf("mail body missing code label: %+v", mail)
 	}
 	// Pull code from store by brute forcing is hard; inject known code
 	hash, _ := bcrypt.GenerateFromPassword([]byte("123456"), bcrypt.MinCost)

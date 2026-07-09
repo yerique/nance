@@ -126,6 +126,14 @@ Both **control plane** and **proxy** load optional `.env` then `.env.local` from
 | `MIGRATIONS_DIR` | `./migrations` | SQL migrations |
 | `NANCE_REDIS_ADDR` | | Redis `host:port` **or** full URL `redis://user:pass@host:port` / `rediss://…` (TLS) |
 | `NANCE_REDIS_PASSWORD` | | Password when using `host:port` form (optional if embedded in URL) |
+| `SENDGRID_API_KEY` or `NANCE_SMTP_PASSWORD` | | SendGrid API key (SMTP relay password). With `NANCE_SMTP_FROM`, enables real email |
+| `NANCE_SMTP_FROM` | | From address (required for SMTP), e.g. `noreply@oxella.com` (must be verified in SendGrid) |
+| `NANCE_SMTP_FROM_NAME` | `Oxella` | From display name |
+| `NANCE_SMTP_HOST` | `smtp.sendgrid.net` | SMTP host (SendGrid relay) |
+| `NANCE_SMTP_PORT` | `587` | SMTP port (STARTTLS) |
+| `NANCE_SMTP_USERNAME` | `apikey` | SMTP username (SendGrid always uses `apikey`) |
+
+When SMTP password + from are unset, emails are not delivered; the dev mailer logs only `to` / `subject` (never the OTP body).
 
 ### Proxy (`cmd/proxy`)
 
@@ -140,6 +148,7 @@ Both **control plane** and **proxy** load optional `.env` then `.env.local` from
 | `NANCE_CACHE_ENABLED` | | Enable cache path when Redis is configured |
 | `NANCE_POLICY_REFRESH_INTERVAL` | `30s` | Reload cache policies from Postgres |
 | `NANCE_PROXY_MAX_CONNS_PER_TENANT` | `200` | Soft limit client TCP conns per tenant |
+| `NANCE_PROXY_AUTH_CACHE_TTL` | `60s` | Cache successful PLAIN auths in-process (`0` disables). Hits re-check revoke via token id (no bcrypt). New tokens use SHA-256 `lookup_hash` for O(1) DB auth. |
 | `NANCE_PROXY_BACKEND_MAX_POOL` | `50` | Driver pool toward real Mongo |
 | `NANCE_PROXY_BACKEND_IDLE_TIMEOUT` | `15m` | Evict unused per-tenant `mongo.Client` after this idle period (`0` disables) |
 | `NANCE_PROXY_BACKEND_IDLE_EVICT_INTERVAL` | `1m` | How often the idle reaper runs |
@@ -155,7 +164,7 @@ Base path: **`/api/v1`**. Health: `/healthz`, `/readyz`, `/metrics`.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/platform` | `{ inviteOnly, allowOrgCreation, allowAdminBootstrap, proxyPublicEndpoint, tokenReenableWindowSeconds }` |
-| `POST` | `/auth/request-code` | `{ "email" }` — send OTP (dev: log mailer) |
+| `POST` | `/auth/request-code` | `{ "email" }` — send OTP (SendGrid SMTP if configured; else dev log mailer) |
 | `POST` | `/auth/verify` | `{ "email", "code" }` → `{ token, user }` |
 
 ### Authenticated (user session **or** `NANCE_ADMIN_TOKEN`)

@@ -83,7 +83,8 @@ func main() {
 		cacheCoord = cache.NewCoordinator(cache.NoopStore{})
 	}
 
-	validator := auth.NewValidator(pgStore)
+	validator := auth.NewValidator(pgStore).WithAuthCacheTTL(cfg.AuthCacheTTL)
+	logger.Info("proxy auth", "authCacheTTL", cfg.AuthCacheTTL.String())
 	pools := pool.NewManager(pgStore, cryptoCfg, cfg, logger)
 	pools.StartIdleEviction(ctx)
 	cursors := cursor.NewRegistry(cfg.CursorIdleTimeout)

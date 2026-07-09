@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/mail"
 	"regexp"
@@ -30,25 +29,6 @@ var (
 	ErrNotMember       = errors.New("not a member")
 	ErrLastOwner       = errors.New("cannot remove the last owner")
 )
-
-// Mailer sends transactional email (verification codes, invites).
-type Mailer interface {
-	Send(ctx context.Context, to, subject, body string) error
-}
-
-// LogMailer logs messages — used in dev when SMTP is not configured.
-type LogMailer struct {
-	Log *slog.Logger
-}
-
-func (m *LogMailer) Send(_ context.Context, to, subject, body string) error {
-	log := m.Log
-	if log == nil {
-		log = slog.Default()
-	}
-	log.Info("email (dev mailer)", "to", to, "subject", subject, "body", body)
-	return nil
-}
 
 // AuthService handles email OTP login and sessions.
 type AuthService struct {
@@ -98,10 +78,12 @@ func (s *AuthService) RequestCode(ctx context.Context, email string) error {
 	if err := s.store.SetEmailVerificationCode(ctx, email, string(hash), expires); err != nil {
 		return err
 	}
-	body := fmt.Sprintf("Your Nance verification code is: %s\n\nIt expires in 10 minutes.\n", code)
-	if err := s.mailer.Send(ctx, email, "Your Nance login code", body); err != nil {
+	const expiryMinutes = 10
+	_, htmlBody := otpEmailBodies(code, expiryMinutes)
+	// Prefer HTML (Oxella branded). SMTP mailer detects HTML. Never log the OTP.
+	if err := s.mailer.Send(ctx, email, otpEmailSubject, htmlBody); err != nil {
 		s.log.Warn("failed to send verification email", "email", email, "error", err)
-		// Still return success to avoid email enumeration timing; code is in logs via LogMailer.
+		// Still return success to avoid email enumeration timing.
 	}
 	return nil
 }

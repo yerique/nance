@@ -119,7 +119,7 @@ export NANCE_ACCELERATOR_URL=http://localhost:8080
 npm run dev                                          # http://localhost:3000
 ```
 
-Sign in with email; in dev the verification code is **logged by the control plane**. Complete onboarding (name), then create or join an organization.
+Sign in with email; with SMTP configured the code is emailed (never logged). Without SMTP, the control plane only logs that mail was attempted (not the OTP). Complete onboarding (name), then create or join an organization.
 
 Details: [`apps/admin-dashboard/README.md`](apps/admin-dashboard/README.md).
 
