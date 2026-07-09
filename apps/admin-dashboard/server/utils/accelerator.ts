@@ -60,13 +60,54 @@ export async function acceleratorFetch<T>(
     })
   }
   catch (err: unknown) {
-    const e = err as { statusCode?: number, data?: { error?: string }, message?: string }
-    const statusCode = e.statusCode || 502
-    const message = e.data?.error || e.message || 'Accelerator request failed'
+    const { statusCode, message } = extractUpstreamError(err)
+    // Put the backend message on statusMessage and data.error (string).
+    // Clients must not read the h3 boolean `error: true` as the message.
     throw createError({
       statusCode,
       statusMessage: message,
+      message,
       data: { error: message },
     })
   }
+}
+
+/** Pull status + human message from ofetch errors against the Go control plane. */
+function extractUpstreamError(err: unknown): { statusCode: number, message: string } {
+  const e = err as {
+    statusCode?: number
+    status?: number
+    statusMessage?: string
+    message?: string
+    data?: unknown
+    response?: { status?: number, _data?: unknown }
+  }
+
+  const statusCode = e.statusCode || e.status || e.response?.status || 502
+  const body = e.data ?? e.response?._data
+
+  let message = 'Accelerator request failed'
+  if (typeof body === 'string' && body.trim()) {
+    message = body.trim()
+  }
+  else if (body && typeof body === 'object') {
+    const b = body as Record<string, unknown>
+    if (typeof b.error === 'string' && b.error.trim()) {
+      message = b.error.trim()
+    }
+    else if (typeof b.message === 'string' && b.message.trim()) {
+      message = b.message.trim()
+    }
+    else if (typeof b.statusMessage === 'string' && b.statusMessage.trim()) {
+      message = b.statusMessage.trim()
+    }
+  }
+  else if (typeof e.statusMessage === 'string' && e.statusMessage.trim()) {
+    message = e.statusMessage.trim()
+  }
+  else if (typeof e.message === 'string' && e.message.trim() && !/^\[[A-Z]+\]\s+"/.test(e.message)) {
+    message = e.message.trim()
+  }
+
+  return { statusCode, message }
 }

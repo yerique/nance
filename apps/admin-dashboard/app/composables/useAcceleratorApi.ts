@@ -16,11 +16,7 @@ import type {
   User,
   PlatformSettings,
 } from '~/types/accelerator'
-
-function apiErrorMessage(err: unknown): string {
-  const e = err as { data?: { error?: string, statusMessage?: string }, statusMessage?: string, message?: string }
-  return e.data?.error || e.data?.statusMessage || e.statusMessage || e.message || 'Request failed'
-}
+import { apiErrorMessage } from '~/utils/apiError'
 
 function authHeaders(): Record<string, string> {
   const { token } = useAuth()
