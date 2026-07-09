@@ -62,10 +62,12 @@ func (s *PostgresStore) UpsertUserByEmail(ctx context.Context, email, name strin
 
 func (s *PostgresStore) GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, email, name, created_at, updated_at FROM users WHERE id = $1
+		SELECT id, email, name, created_at, updated_at,
+		       (password_hash IS NOT NULL AND password_hash <> '')
+		FROM users WHERE id = $1
 	`, id)
 	var u model.User
-	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt, &u.UpdatedAt, &u.HasPassword); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -77,10 +79,12 @@ func (s *PostgresStore) GetUserByID(ctx context.Context, id string) (*model.User
 func (s *PostgresStore) GetUserByEmail(ctx context.Context, email string) (*model.User, error) {
 	email = normalizeEmail(email)
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, email, name, created_at, updated_at FROM users WHERE LOWER(email) = $1
+		SELECT id, email, name, created_at, updated_at,
+		       (password_hash IS NOT NULL AND password_hash <> '')
+		FROM users WHERE LOWER(email) = $1
 	`, email)
 	var u model.User
-	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt, &u.UpdatedAt, &u.HasPassword); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -92,6 +96,81 @@ func (s *PostgresStore) GetUserByEmail(ctx context.Context, email string) (*mode
 func (s *PostgresStore) UpdateUserName(ctx context.Context, id, name string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE users SET name = $2, updated_at = NOW() WHERE id = $1`, id, name)
 	return err
+}
+
+func (s *PostgresStore) SetUserPasswordHash(ctx context.Context, userID, passwordHash string) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1
+	`, userID, passwordHash)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetUserPasswordHash(ctx context.Context, userID string) (string, error) {
+	row := s.pool.QueryRow(ctx, `SELECT password_hash FROM users WHERE id = $1`, userID)
+	var hash *string
+	if err := row.Scan(&hash); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	if hash == nil || *hash == "" {
+		return "", ErrNotFound
+	}
+	return *hash, nil
+}
+
+func (s *PostgresStore) ClearUserPassword(ctx context.Context, userID string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET password_hash = NULL, updated_at = NOW() WHERE id = $1`, userID)
+	return err
+}
+
+func (s *PostgresStore) CreatePasswordResetToken(ctx context.Context, id, userID, tokenHash string, expiresAt time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at, created_at)
+		VALUES ($1, $2, $3, $4, NOW())
+	`, id, userID, tokenHash, expiresAt.UTC())
+	return err
+}
+
+func (s *PostgresStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
+		SELECT id, user_id, expires_at, used_at
+		FROM password_reset_tokens
+		WHERE token_hash = $1
+		FOR UPDATE
+	`, tokenHash)
+	var id, userID string
+	var expires time.Time
+	var usedAt *time.Time
+	if err := row.Scan(&id, &userID, &expires, &usedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	if usedAt != nil || time.Now().UTC().After(expires) {
+		return "", ErrNotFound
+	}
+	if _, err := tx.Exec(ctx, `UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1`, id); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return userID, nil
 }
 
 func (s *PostgresStore) SetEmailVerificationCode(ctx context.Context, email, codeHash string, expiresAt time.Time) error {

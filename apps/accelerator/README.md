@@ -119,6 +119,8 @@ Both **control plane** and **proxy** load optional `.env` then `.env.local` from
 | `DATABASE_URL` | `postgres://nance:nance@localhost:5432/nance?sslmode=disable` | Postgres |
 | `NANCE_ADMIN_TOKEN` | (empty = open / legacy dev mode unless restricted) | Platform admin bearer |
 | `NANCE_INVITE_ONLY` | `false` | Users cannot create orgs; join via invite only |
+| `NANCE_PASSWORD_AUTH_ENABLED` | `true` | Optional email+password login (set after OTP account exists); set `false` to hide password UI and APIs |
+| `NANCE_APP_PUBLIC_URL` | `https://app.oxella.com` | Dashboard origin for password-reset email links |
 | `NANCE_REQUIRE_USER_AUTH` | unset | If `1`, require session/admin token even when admin token is empty |
 | `NANCE_PROXY_PUBLIC_ENDPOINT` | `127.0.0.1:27018` | Host[:port] embedded in issued `proxyConnectionUri` values and `GET /platform` |
 | `NANCE_TOKEN_REENABLE_WINDOW` | `5m` | How long after revoke a proxy token may be re-enabled (`0` disables; Go duration, e.g. `5m`, `1h`) |
@@ -163,7 +165,11 @@ Base path: **`/api/v1`**. Health: `/healthz`, `/readyz`, `/metrics`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/platform` | `{ inviteOnly, allowOrgCreation, allowAdminBootstrap, proxyPublicEndpoint, tokenReenableWindowSeconds }` |
+| `GET` | `/platform` | `{ inviteOnly, allowOrgCreation, allowAdminBootstrap, proxyPublicEndpoint, tokenReenableWindowSeconds, passwordAuthEnabled }` |
+| `POST` | `/auth/login-password` | Email + password session (requires password auth enabled) |
+| `POST` | `/auth/forgot-password` | Send password reset email (no enumeration) |
+| `POST` | `/auth/reset-password` | `{ token, password }` consume reset link |
+| `PUT` | `/me/password` | Set or update password (authenticated) |
 | `POST` | `/auth/request-code` | `{ "email" }` — send OTP (SendGrid SMTP if configured; else dev log mailer) |
 | `POST` | `/auth/verify` | `{ "email", "code" }` → `{ token, user }` |
 

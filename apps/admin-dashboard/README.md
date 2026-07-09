@@ -12,7 +12,7 @@ Operators and team members sign in with **email + one-time code**, manage **orga
 
 | Area | What you can do |
 |------|-----------------|
-| **Auth** | Email OTP login/signup; **name** collected on **onboarding** after verify |
+| **Auth** | Email OTP login/signup; optional **password** login when `passwordAuthEnabled` (set/update after account exists; forgot-password email); **name** on **onboarding** |
 | **Organizations** | List memberships, create (unless invite-only), accept invites |
 | **Roles** | **member** read-only · **admin** manage settings · **owner** + delete org |
 | **Members** | Invite by email (role limits by inviter), revoke invites, remove members |

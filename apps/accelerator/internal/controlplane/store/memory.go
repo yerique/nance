@@ -17,17 +17,26 @@ var ErrDuplicate = errors.New("duplicate")
 type MemoryStore struct {
 	mu sync.Mutex
 
-	tenants      map[string]*model.Tenant
-	connections  map[string]*model.Connection // by connection id
-	policies     map[string]*model.CachePolicy
-	tokens       map[string]*tokenRow
-	users        map[string]*model.User // by id
-	usersByEmail map[string]*model.User
-	emailCodes   map[string]emailCode
-	sessions     map[string]sessionRow                  // by token hash
-	members      map[string]map[string]model.MemberRole // tenant -> user -> role
-	invites      map[string]*inviteRow
-	audits       int
+	tenants        map[string]*model.Tenant
+	connections    map[string]*model.Connection // by connection id
+	policies       map[string]*model.CachePolicy
+	tokens         map[string]*tokenRow
+	users          map[string]*model.User // by id
+	usersByEmail   map[string]*model.User
+	userPasswords  map[string]string // userID -> bcrypt hash
+	passwordResets map[string]pwResetRow
+	emailCodes     map[string]emailCode
+	sessions       map[string]sessionRow                  // by token hash
+	members        map[string]map[string]model.MemberRole // tenant -> user -> role
+	invites        map[string]*inviteRow
+	audits         int
+}
+
+type pwResetRow struct {
+	id        string
+	userID    string
+	expiresAt time.Time
+	used      bool
 }
 
 type tokenRow struct {
@@ -55,16 +64,18 @@ type inviteRow struct {
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		tenants:      make(map[string]*model.Tenant),
-		connections:  make(map[string]*model.Connection),
-		policies:     make(map[string]*model.CachePolicy),
-		tokens:       make(map[string]*tokenRow),
-		users:        make(map[string]*model.User),
-		usersByEmail: make(map[string]*model.User),
-		emailCodes:   make(map[string]emailCode),
-		sessions:     make(map[string]sessionRow),
-		members:      make(map[string]map[string]model.MemberRole),
-		invites:      make(map[string]*inviteRow),
+		tenants:        make(map[string]*model.Tenant),
+		connections:    make(map[string]*model.Connection),
+		policies:       make(map[string]*model.CachePolicy),
+		tokens:         make(map[string]*tokenRow),
+		users:          make(map[string]*model.User),
+		usersByEmail:   make(map[string]*model.User),
+		userPasswords:  make(map[string]string),
+		passwordResets: make(map[string]pwResetRow),
+		emailCodes:     make(map[string]emailCode),
+		sessions:       make(map[string]sessionRow),
+		members:        make(map[string]map[string]model.MemberRole),
+		invites:        make(map[string]*inviteRow),
 	}
 }
 
@@ -429,6 +440,7 @@ func (m *MemoryStore) GetUserByID(_ context.Context, id string) (*model.User, er
 		return nil, ErrNotFound
 	}
 	cp := *u
+	_, cp.HasPassword = m.userPasswords[id]
 	return &cp, nil
 }
 
@@ -441,7 +453,54 @@ func (m *MemoryStore) GetUserByEmail(_ context.Context, email string) (*model.Us
 		return nil, ErrNotFound
 	}
 	cp := *u
+	_, cp.HasPassword = m.userPasswords[u.ID]
 	return &cp, nil
+}
+
+func (m *MemoryStore) SetUserPasswordHash(_ context.Context, userID, passwordHash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.users[userID]; !ok {
+		return ErrNotFound
+	}
+	m.userPasswords[userID] = passwordHash
+	return nil
+}
+
+func (m *MemoryStore) GetUserPasswordHash(_ context.Context, userID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h, ok := m.userPasswords[userID]
+	if !ok || h == "" {
+		return "", ErrNotFound
+	}
+	return h, nil
+}
+
+func (m *MemoryStore) ClearUserPassword(_ context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.userPasswords, userID)
+	return nil
+}
+
+func (m *MemoryStore) CreatePasswordResetToken(_ context.Context, id, userID, tokenHash string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.passwordResets[tokenHash] = pwResetRow{id: id, userID: userID, expiresAt: expiresAt.UTC()}
+	return nil
+}
+
+func (m *MemoryStore) ConsumePasswordResetToken(_ context.Context, tokenHash string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.passwordResets[tokenHash]
+	if !ok || row.used || time.Now().UTC().After(row.expiresAt) {
+		return "", ErrNotFound
+	}
+	row.used = true
+	m.passwordResets[tokenHash] = row
+	return row.userID, nil
 }
 
 func (m *MemoryStore) UpdateUserName(_ context.Context, id, name string) error {

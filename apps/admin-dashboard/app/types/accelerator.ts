@@ -16,6 +16,8 @@ export interface User {
   name: string
   created_at: string
   updated_at: string
+  /** True when the user has set an optional login password. */
+  hasPassword?: boolean
 }
 
 export type MemberRole = 'owner' | 'admin' | 'member'
@@ -134,4 +136,6 @@ export interface PlatformSettings {
   proxyPublicEndpoint?: string
   /** Grace period (seconds) to re-enable a revoked proxy token; 0 = disabled. */
   tokenReenableWindowSeconds?: number
+  /** When true, show password login / set / forgot-password UI. */
+  passwordAuthEnabled?: boolean
 }

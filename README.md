@@ -4,10 +4,19 @@
   <img src="docs/assets/nance-icon.svg" alt="Nance" width="96" height="96" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/taeven/nance"><img src="https://img.shields.io/badge/GitHub-taeven%2Fnance-181717?logo=github&logoColor=white" alt="GitHub" /></a>
+  <a href="https://github.com/taeven/nance/stargazers"><img src="https://img.shields.io/github/stars/taeven/nance?style=social" alt="GitHub stars" /></a>
+  <a href="https://github.com/taeven/nance/blob/main/LICENSE"><img src="https://img.shields.io/github/license/taeven/nance" alt="License: MIT" /></a>
+  <a href="https://github.com/taeven/nance/actions/workflows/docker-ghcr.yml"><img src="https://img.shields.io/github/actions/workflow/status/taeven/nance/docker-ghcr.yml?branch=main&label=CI" alt="CI" /></a>
+  <a href="https://github.com/taeven/nance"><img src="https://img.shields.io/github/last-commit/taeven/nance" alt="Last commit" /></a>
+</p>
+
 **Nance** is an open-source **MongoDB accelerator**: a multi-tenant control plane, a MongoDB wire-protocol proxy with optional Redis read-through caching, and tools to operate and load-test it.
 
 Self-host the stack on your own servers, invite your team, point application clients at the proxy, and opt into caching **per query** with a `_cache` collection suffix.
 
+**→ [github.com/taeven/nance](https://github.com/taeven/nance)** · MIT licensed · [issues](https://github.com/taeven/nance/issues) · [releases](https://github.com/taeven/nance/releases)
 
 ## Hosted Nance (Oxella Technologies)
 
@@ -19,7 +28,7 @@ Want managed Nance without operating the stack yourself?
 |--|--|
 | Marketing / product site | [https://oxella.com](https://oxella.com) |
 | Application console | [https://app.oxella.com](https://app.oxella.com) |
-| Open-source self-host | this repository |
+| Open source | [https://github.com/taeven/nance](https://github.com/taeven/nance) |
 
 Self-host with the apps in this monorepo, or use Oxella for a fully managed experience. Same product model either way.
 

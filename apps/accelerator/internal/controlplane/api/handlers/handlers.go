@@ -21,6 +21,8 @@ type PlatformPublic struct {
 	ProxyPublicEndpoint string `json:"proxyPublicEndpoint"`
 	// TokenReenableWindowSeconds is how long after revoke a token may be re-enabled (0 = disabled).
 	TokenReenableWindowSeconds int `json:"tokenReenableWindowSeconds"`
+	// PasswordAuthEnabled exposes optional email+password login / set / reset UI.
+	PasswordAuthEnabled bool `json:"passwordAuthEnabled"`
 }
 
 type Handlers struct {
@@ -139,9 +141,16 @@ func mapAuthErr(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, service.ErrForbidden), errors.Is(err, service.ErrNotMember):
 		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, service.ErrPasswordAuthOff):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, service.ErrInvalidCredentials):
+		writeError(w, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, service.ErrInvalidEmail), errors.Is(err, service.ErrInvalidCode),
 		errors.Is(err, service.ErrTooManyAttempts), errors.Is(err, service.ErrInviteExpired),
-		errors.Is(err, service.ErrAlreadyMember), errors.Is(err, service.ErrLastOwner):
+		errors.Is(err, service.ErrAlreadyMember), errors.Is(err, service.ErrLastOwner),
+		errors.Is(err, service.ErrWeakPassword), errors.Is(err, service.ErrPasswordMismatch),
+		errors.Is(err, service.ErrNoPasswordSet), errors.Is(err, service.ErrPasswordAlreadySet),
+		errors.Is(err, service.ErrInvalidResetToken):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, service.ErrInviteNotFound), errors.Is(err, service.ErrTenantNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
@@ -190,6 +199,83 @@ func (h *Handlers) VerifyCode(w http.ResponseWriter, r *http.Request) {
 		"expiresIn": int((30 * 24 * time.Hour).Seconds()),
 		"user":      user,
 	})
+}
+
+func (h *Handlers) LoginPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	token, user, err := h.auth.LoginWithPassword(r.Context(), req.Email, req.Password)
+	if err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":     token,
+		"expiresIn": int((30 * 24 * time.Hour).Seconds()),
+		"user":      user,
+	})
+}
+
+func (h *Handlers) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := h.auth.RequestPasswordReset(r.Context(), req.Email); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"message": "If an account with a password exists for that email, a reset link has been sent",
+	})
+}
+
+func (h *Handlers) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := h.auth.ResetPassword(r.Context(), req.Token, req.Password); err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handlers) SetPassword(w http.ResponseWriter, r *http.Request) {
+	u := cpauth.UserFromContext(r.Context())
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req struct {
+		CurrentPassword string `json:"currentPassword"`
+		Password        string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	updated, err := h.auth.SetPassword(r.Context(), u.ID, req.CurrentPassword, req.Password)
+	if err != nil {
+		mapAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) {

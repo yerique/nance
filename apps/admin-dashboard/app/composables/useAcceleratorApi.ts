@@ -46,6 +46,35 @@ export function useAcceleratorApi() {
     })
   }
 
+  async function loginPassword(email: string, password: string) {
+    return $fetch<AuthVerifyResponse>('/api/auth/login-password', {
+      method: 'POST',
+      body: { email, password },
+    })
+  }
+
+  async function forgotPassword(email: string) {
+    return $fetch<StatusResponse>('/api/auth/forgot-password', {
+      method: 'POST',
+      body: { email },
+    })
+  }
+
+  async function resetPassword(token: string, password: string) {
+    return $fetch<StatusResponse>('/api/auth/reset-password', {
+      method: 'POST',
+      body: { token, password },
+    })
+  }
+
+  async function setPassword(password: string, currentPassword?: string) {
+    return $fetch<User>('/api/me/password', {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: { password, currentPassword: currentPassword || '' },
+    })
+  }
+
   async function updateProfile(name: string) {
     return $fetch<User>('/api/me', {
       method: 'PATCH',
@@ -279,6 +308,10 @@ export function useAcceleratorApi() {
     getPlatformSettings,
     requestCode,
     verifyCode,
+    loginPassword,
+    forgotPassword,
+    resetPassword,
+    setPassword,
     updateProfile,
     logout,
     me,

@@ -47,6 +47,9 @@ func NewServer(
 			r.Get("/platform", h.GetPlatformSettings)
 			r.Post("/auth/request-code", h.RequestCode)
 			r.Post("/auth/verify", h.VerifyCode)
+			r.Post("/auth/login-password", h.LoginPassword)
+			r.Post("/auth/forgot-password", h.ForgotPassword)
+			r.Post("/auth/reset-password", h.ResetPassword)
 
 			// Authenticated routes (user session or platform admin token)
 			r.Group(func(r chi.Router) {
@@ -55,6 +58,7 @@ func NewServer(
 				r.Post("/auth/logout", h.Logout)
 				r.Get("/me", h.Me)
 				r.Patch("/me", h.UpdateMe)
+				r.Put("/me/password", h.SetPassword)
 				r.Get("/me/organizations", h.ListMyOrganizations)
 				r.Post("/me/organizations", h.CreateMyOrganization)
 				r.Get("/me/invites", h.ListMyInvites)

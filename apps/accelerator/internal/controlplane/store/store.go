@@ -78,6 +78,13 @@ type Store interface {
 	GetUserByID(ctx context.Context, id string) (*model.User, error)
 	GetUserByEmail(ctx context.Context, email string) (*model.User, error)
 	UpdateUserName(ctx context.Context, id, name string) error
+	// Password auth (optional feature)
+	SetUserPasswordHash(ctx context.Context, userID, passwordHash string) error
+	GetUserPasswordHash(ctx context.Context, userID string) (passwordHash string, err error)
+	ClearUserPassword(ctx context.Context, userID string) error
+	CreatePasswordResetToken(ctx context.Context, id, userID, tokenHash string, expiresAt time.Time) error
+	// ConsumePasswordResetToken validates hash, marks used, returns userID. ErrNotFound if invalid/expired/used.
+	ConsumePasswordResetToken(ctx context.Context, tokenHash string) (userID string, err error)
 	SetEmailVerificationCode(ctx context.Context, email, codeHash string, expiresAt time.Time) error
 	GetEmailVerificationCode(ctx context.Context, email string) (codeHash string, expiresAt time.Time, attempts int, err error)
 	IncrementEmailVerificationAttempts(ctx context.Context, email string) error

@@ -26,6 +26,12 @@ type Config struct {
 	// Default 5m. Set NANCE_TOKEN_REENABLE_WINDOW=0 to disable.
 	TokenReenableWindow time.Duration
 
+	// PasswordAuthEnabled allows optional email+password login after account creation.
+	// Default true. Set NANCE_PASSWORD_AUTH_ENABLED=false to disable.
+	PasswordAuthEnabled bool
+	// AppPublicURL is the dashboard base URL for password-reset links (e.g. https://app.oxella.com).
+	AppPublicURL string
+
 	// SMTP (SendGrid SMTP relay or any compatible server). When password+from
 	// are set the control plane sends real email; otherwise it uses the dev log mailer.
 	SMTPHost     string // default smtp.sendgrid.net
@@ -80,6 +86,11 @@ func Load() *Config {
 		smtpFromName = "Oxella"
 	}
 
+	appURL := strings.TrimSpace(os.Getenv("NANCE_APP_PUBLIC_URL"))
+	if appURL == "" {
+		appURL = "https://app.oxella.com"
+	}
+
 	return &Config{
 		Port:                ":" + port,
 		DatabaseURL:         dbURL,
@@ -89,6 +100,8 @@ func Load() *Config {
 		InviteOnly:          envBool("NANCE_INVITE_ONLY", false),
 		ProxyPublicEndpoint: proxyEndpoint,
 		TokenReenableWindow: envDurationAllowZero("NANCE_TOKEN_REENABLE_WINDOW", 5*time.Minute),
+		PasswordAuthEnabled: envBool("NANCE_PASSWORD_AUTH_ENABLED", true),
+		AppPublicURL:        appURL,
 		SMTPHost:            smtpHost,
 		SMTPPort:            smtpPort,
 		SMTPUsername:        smtpUser,
@@ -120,12 +133,15 @@ type PlatformPublic struct {
 	ProxyPublicEndpoint string `json:"proxyPublicEndpoint"`
 	// TokenReenableWindowSeconds is the grace period to re-enable a revoked proxy token (0 = disabled).
 	TokenReenableWindowSeconds int `json:"tokenReenableWindowSeconds"`
+	// PasswordAuthEnabled when true exposes password login / set / reset in the dashboard.
+	PasswordAuthEnabled bool `json:"passwordAuthEnabled"`
 }
 
 func (c *Config) PlatformPublic() PlatformPublic {
 	inviteOnly := c != nil && c.InviteOnly
 	endpoint := "127.0.0.1:27018"
 	window := 5 * time.Minute
+	passwordAuth := true // match Load() default
 	if c != nil {
 		if c.ProxyPublicEndpoint != "" {
 			endpoint = c.ProxyPublicEndpoint
@@ -134,6 +150,7 @@ func (c *Config) PlatformPublic() PlatformPublic {
 		if window < 0 {
 			window = 0
 		}
+		passwordAuth = c.PasswordAuthEnabled
 	}
 	return PlatformPublic{
 		InviteOnly:                 inviteOnly,
@@ -141,6 +158,7 @@ func (c *Config) PlatformPublic() PlatformPublic {
 		AllowAdminBootstrap:        true,
 		ProxyPublicEndpoint:        endpoint,
 		TokenReenableWindowSeconds: int(window / time.Second),
+		PasswordAuthEnabled:        passwordAuth,
 	}
 }
 

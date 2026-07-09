@@ -80,10 +80,15 @@ func main() {
 		WithProxyPublicEndpoint(cfg.ProxyPublicEndpoint).
 		WithReenableWindow(cfg.TokenReenableWindow)
 	mailer := newMailer(cfg, logger)
-	authSvc := service.NewAuthService(pgStore, mailer, logger)
+	authSvc := service.NewAuthService(pgStore, mailer, logger).
+		WithPasswordAuth(cfg.PasswordAuthEnabled).
+		WithAppPublicURL(cfg.AppPublicURL)
 	orgSvc := service.NewOrgService(pgStore, mailer).WithInviteOnly(cfg.InviteOnly)
 	if cfg.InviteOnly {
 		logger.Info("invite-only mode enabled (NANCE_INVITE_ONLY): users cannot create organizations; join via invite only; platform admin can still bootstrap tenants")
+	}
+	if cfg.PasswordAuthEnabled {
+		logger.Info("password authentication enabled (NANCE_PASSWORD_AUTH_ENABLED)")
 	}
 
 	// 5. HTTP server
@@ -94,6 +99,7 @@ func main() {
 		AllowAdminBootstrap:        pub.AllowAdminBootstrap,
 		ProxyPublicEndpoint:        pub.ProxyPublicEndpoint,
 		TokenReenableWindowSeconds: pub.TokenReenableWindowSeconds,
+		PasswordAuthEnabled:        pub.PasswordAuthEnabled,
 	})
 
 	srv := &http.Server{
@@ -121,6 +127,7 @@ func main() {
 		"addr", cfg.Port,
 		"proxyPublicEndpoint", cfg.ProxyPublicEndpoint,
 		"tokenReenableWindow", cfg.TokenReenableWindow.String(),
+		"passwordAuthEnabled", cfg.PasswordAuthEnabled,
 	)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server error", "error", err)

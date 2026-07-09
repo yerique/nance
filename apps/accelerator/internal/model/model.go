@@ -11,13 +11,15 @@ type Tenant struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// User is a dashboard identity authenticated via email OTP.
+// User is a dashboard identity authenticated via email OTP (and optional password).
 type User struct {
 	ID        string    `json:"id"`
 	Email     string    `json:"email"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// HasPassword is true when the user has set a login password (never expose the hash).
+	HasPassword bool `json:"hasPassword"`
 }
 
 // MemberRole is the role of a user within an organization (tenant).
