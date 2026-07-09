@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/mail"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -319,12 +320,33 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, email string) er
 	if err := s.store.CreatePasswordResetToken(ctx, id, user.ID, hashToken(raw), exp); err != nil {
 		return err
 	}
-	link := s.appPublicURL + "/reset-password?token=" + raw
+	link := buildPasswordResetURL(s.appPublicURL, raw)
 	_, htmlBody := passwordResetEmailBodies(link, 60)
 	if err := s.mailer.Send(ctx, email, passwordResetEmailSubject, htmlBody); err != nil {
 		s.log.Warn("failed to send password reset email", "email", email, "error", err)
 	}
 	return nil
+}
+
+// buildPasswordResetURL returns an absolute dashboard URL for the reset page with token query.
+func buildPasswordResetURL(appPublicURL, rawToken string) string {
+	base := strings.TrimSpace(appPublicURL)
+	if base == "" {
+		base = "https://app.oxella.com"
+	}
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "https://" + base
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		// Fallback: avoid a broken relative href in email clients.
+		return "https://app.oxella.com/reset-password?token=" + url.QueryEscape(rawToken)
+	}
+	// Always the Nuxt page path — ignore any accidental path on the public base URL.
+	u.Path = "/reset-password"
+	u.RawQuery = url.Values{"token": {rawToken}}.Encode()
+	u.Fragment = ""
+	return u.String()
 }
 
 // ResetPassword consumes a reset token and sets a new password.
