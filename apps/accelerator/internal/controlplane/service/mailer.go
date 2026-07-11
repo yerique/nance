@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/smtp"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -28,10 +29,14 @@ func (m *LogMailer) Send(_ context.Context, to, subject, body string) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	if match := codeRegexp.FindString(body); match != "" {
-		log.Info("email (dev mailer)", "to", to, "subject", subject, "code", match)
+	if strings.ToLower(os.Getenv("ENVIRONMENT")) == "local" {
+		if match := codeRegexp.FindString(body); match != "" {
+			log.Info("email (dev mailer)", "to", to, "subject", subject, "code", match)
+		} else {
+			log.Info("email (dev mailer)", "to", to, "subject", subject, "body", body)
+		}
 	} else {
-		log.Info("email (dev mailer)", "to", to, "subject", subject, "body", body)
+		log.Info("email (dev mailer)", "to", to, "subject", subject, "bodyBytes", len(body))
 	}
 	return nil
 }
